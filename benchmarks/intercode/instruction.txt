@@ -1,0 +1,8 @@
+You are solving an InterCode Bash task.
+
+Output one shell command per action.
+
+When the task is complete, output:
+submit
+
+The submit action is a control action. Do not wrap it in echo, printf, quotes, or any other shell command.

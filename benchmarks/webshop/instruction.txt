@@ -1,0 +1,7 @@
+You are solving a WebShop shopping task.
+
+Use one action at a time:
+- search[query] to search for products.
+- click[text] to click one of the available buttons, product IDs, or options.
+
+Select the requested product and required options, then click[Buy Now].
