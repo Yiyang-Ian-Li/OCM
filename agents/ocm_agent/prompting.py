@@ -15,8 +15,9 @@ KNOWLEDGE_DESIGN_PRINCIPLES = (
     "Separate the world model from action lessons. Ground every update in observations, invalid-action feedback, "
     "reward, done, or success signals. Treat existing knowledge as provisional: preserve it when supported, refine "
     "it when incomplete, and replace it when contradicted. Successful episodes show what works; failed episodes "
-    "mostly show preconditions, invalid syntax, missing observations, failure causes, and recovery. Keep final "
-    "knowledge compact and reusable."
+    "mostly show preconditions, invalid syntax, missing observations, failure causes, and recovery. Predictions are "
+    "commitments made before observing an action's outcome: use prediction-observation agreement as support and "
+    "mismatch as a counterexample to the cited knowledge. Keep final knowledge compact and reusable."
 )
 
 REFLECTION_RULES = {
@@ -31,10 +32,15 @@ REFLECTION_RULES = {
         "Plan only reusable knowledge supported by the episode.",
         "Use object updates for entities, states, affordances, constraints, relations, or mappings.",
         "Use procedural updates for workflows, rules, syntax constraints, failure patterns, heuristics, or recovery.",
+        "Attribute an incorrect predicted environment effect to the cited object knowledge.",
+        "Attribute an unsuitable decision whose predicted effect was accurate to the cited procedural knowledge.",
         "Skip one-offs, exact locations, task ids, raw trajectories, and full action scripts.",
     ],
     "content": [
         "Evidence should mention the relevant observation, invalid feedback, reward, done, or success signal.",
+        "Use each step's prediction and realized next observation to identify supported or contradicted knowledge.",
+        "When a prediction is contradicted, inspect and revise the object or procedural symbols cited in that step before creating unrelated knowledge.",
+        "Treat semantic agreement as support even when prediction and observation use different wording.",
         "If existing knowledge is contradicted, plan replace rather than only adding new knowledge.",
         "For procedural updates, name the object_knowledge types or helpers the lesson should use.",
     ],
@@ -95,10 +101,17 @@ def action_messages(
                 "not for direct execution. Do not copy internal class, file, or function names as environment actions. "
                 "Use signatures, procedural index entries, and any inspected code to choose the next real text action. "
                 "Inspect relevant learned resources when you are uncertain about object affordances, action syntax, "
-                "preconditions, success signals, failure causes, or recovery. Output exactly two lines: a brief "
-                "Thought line and an Action line. Use internal inspect only to read learned resources, for example: "
+                "preconditions, success signals, failure causes, or recovery. Before acting, commit to one concise, "
+                "falsifiable prediction of the immediate observable outcome and cite the exact learned symbols that "
+                "support it. Output exactly four lines: a brief Thought line, a Prediction line, a Grounding line, "
+                "and an Action line. Use Grounding: none when no learned symbol supports the prediction. Use internal "
+                "inspect only to read learned resources, for example: "
                 "Action: Inspect[object.Container, procedural.heating_substance]. Otherwise the Action line must "
-                "be one primitive environment action."
+                "be one primitive environment action. Use this format:\n"
+                "Thought: <brief reasoning>\n"
+                "Prediction: <immediate observable outcome if the action is executed>\n"
+                "Grounding: <comma-separated object.* and procedural.* symbols, or none>\n"
+                "Action: <one primitive environment action>"
             ),
         }
     ]
@@ -138,8 +151,11 @@ def plain_action_messages(
             "content": (
                 "You are an interactive environment agent. "
                 "Follow benchmark guidance if provided. "
-                "Output exactly two lines in this format:\n"
+                "Before acting, commit to one concise, falsifiable prediction of the immediate observable outcome. "
+                "Output exactly four lines in this format:\n"
                 "Thought: <brief reasoning>\n"
+                "Prediction: <immediate observable outcome if the action is executed>\n"
+                "Grounding: none\n"
                 "Action: <one primitive environment action>\n"
                 "Do not output markdown or extra text."
             ),

@@ -10,6 +10,7 @@ from agents.llm import OpenAIChatClient
 
 from .knowledge_code import parse_inspect_request
 from .knowledge import KnowledgeStore, parse_knowledge_updates, parse_reflection_plan
+from .prediction import parse_prediction_provenance
 from .prompting import (
     action_messages,
     knowledge_update_messages,
@@ -176,6 +177,7 @@ class OCMAgent(Agent):
             )
             raw_output = self._chat(messages, call_type="act_after_unresolved_inspect")
         action = extract_action_candidate(raw_output)
+        prediction_provenance = parse_prediction_provenance(raw_output)
         self.last_raw_output = raw_output
         self._decision_log.append(
             {
@@ -184,6 +186,7 @@ class OCMAgent(Agent):
                 "raw_output": raw_output,
                 "parsed_action": action,
                 "inspect_symbols": all_inspect_symbols,
+                **prediction_provenance,
                 "token_usage": self.last_token_usage(),
             }
         )

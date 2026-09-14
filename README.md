@@ -29,6 +29,11 @@ bases, and verifies that procedures execute against the updated object model.
 During future interaction, the agent uses progressive disclosure to inspect
 compact code signatures first and read source only when needed.
 
+Each environment action also carries a prediction of its immediate observable
+outcome and cites the object and procedure symbols that support it. The realized
+transition then provides localized evidence for confirming or revising those
+knowledge units during the episode update.
+
 The runner currently supports:
 
 - `sciworld`: ScienceWorld task environments.
