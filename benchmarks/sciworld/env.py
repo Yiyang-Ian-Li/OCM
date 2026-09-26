@@ -1,4 +1,5 @@
 import logging
+import re
 
 from scienceworld import ScienceWorldEnv
 from scienceworld.constants import JAR_PATH as package_jar_path
@@ -19,17 +20,21 @@ class SciWorldEnv(BenchmarkEnv):
         env: ScienceWorldEnv | None = None,
         simplification_str: str = DEFAULT_SIMPLIFICATION,
         env_step_limit: int = 100,
+        agent_step_limit: int | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.task: SciWorldTask = task
         self.env_step_limit = int(env_step_limit)
-        self.max_steps = self.env_step_limit
+        self.max_steps = int(agent_step_limit or self.env_step_limit)
         self.uses_native_step_limit = True
         self.env = env or make_scienceworld_env("", serverPath=package_jar_path, envStepLimit=self.env_step_limit)
         self.simplification_str = simplification_str
+        self._agentboard_progress: list[bool] = []
 
     def step(self, action: str) -> StepResult:
+        if self.task.subgoals:
+            return self._agentboard_step(action)
         try:
             observation, _, done, info = self.env.step(action.strip())
             reward = info["score"]
@@ -63,7 +68,51 @@ class SciWorldEnv(BenchmarkEnv):
             generateGoldPath=False,
         )
         observation, info = self.env.reset()
-        return f"{info['taskDesc']}\n\n{observation}"
+        self._agentboard_progress = [False] * len(self.task.subgoals)
+        self._world_model_goal = str(self.task.goal_override or info["taskDesc"])
+        return f"{self._world_model_goal}\n\n{observation}"
+
+    def world_model_state(self, observation: str) -> str:
+        state_observation = str(observation).strip()
+        goal = self.world_model_goal().strip()
+        if goal and state_observation.startswith(goal):
+            state_observation = state_observation[len(goal) :].lstrip()
+        return f"{state_observation}\n{self.env.inventory()}".strip()
+
+    def world_model_goal(self) -> str:
+        return getattr(self, "_world_model_goal", "")
 
     def close(self) -> None:
         close_scienceworld_env(self.env)
+
+    def _agentboard_step(self, action: str) -> StepResult:
+        normalized = action.strip()
+        try:
+            observation, _, _, info = self.env.step(normalized)
+        except AssertionError:
+            return StepResult(
+                observation="Invalid action.",
+                reward=self._agentboard_reward(),
+                invalid_action=True,
+                terminate_reason="invalid_action",
+            )
+        for index, pattern in enumerate(self.task.subgoals):
+            if re.search(pattern, observation):
+                self._agentboard_progress[index] = True
+        reward = self._agentboard_reward()
+        done = all(self._agentboard_progress)
+        invalid_action = "No known action matches that input." in observation
+        protocol_info = dict(info or {})
+        protocol_info.pop("moves", None)
+        return StepResult(
+            observation=observation,
+            reward=reward,
+            done=done,
+            success=done,
+            invalid_action=invalid_action,
+            terminate_reason="success" if done else None,
+            info=protocol_info,
+        )
+
+    def _agentboard_reward(self) -> float:
+        return sum(self._agentboard_progress) / len(self._agentboard_progress)

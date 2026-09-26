@@ -35,6 +35,12 @@ class BenchmarkEnv(ABC):
     def reset(self) -> str:
         raise NotImplementedError
 
+    def world_model_state(self, observation: str) -> str:
+        return str(observation)
+
+    def world_model_goal(self) -> str:
+        return ""
+
     def close(self) -> None:
         return None
 

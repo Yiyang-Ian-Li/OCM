@@ -13,18 +13,24 @@ DEFAULT_CONFIG = {
     "benchmark": "plancraft",  # Which benchmark to run by default.
     "split": "test.small",  # Dataset split using the selected benchmark's native split names.
     "task_limit": None,  # Optional cap on number of tasks to execute.
+    "task_offset": 0,
+    "num_trials": 1,  # Consecutive attempts per task; metrics use best-of-trials.
 
     # Run output controls.
     "output_dir": "outputs",  # Parent directory for run outputs.
     "run_name": None,  # Explicit run folder name; otherwise auto-generated.
+    "resume": False,  # Continue an interrupted run from its completed task records.
+    "wandb_project": None,  # Enable Weights & Biases tracking when set.
+    "wandb_entity": None,  # Optional Weights & Biases entity override.
+    "wandb_run_id": None,  # Optional run id used when resuming W&B.
 
     # Benchmark-specific settings.
     "alfworld_step_limit": 50,
     "sciworld_simplification": "easy",
     "sciworld_env_step_limit": 100,
+    "sciworld_agent_step_limit": 100,
     "plancraft_step_limit": 30,
     "webshop_step_limit": 15,
-    "intercode_step_limit": 10,
 
     # Agent backend selection.
     "agent": "ocm",  # Agent backend.
@@ -35,15 +41,19 @@ DEFAULT_CONFIG = {
     "base_url": None,  # Optional override for the selected provider base URL.
     "api_key": None,  # API key resolved from CLI or .env for the selected provider.
     "temperature": 0.0,  # Sampling temperature for model generation.
+    "top_p": 0.5,
+    "seed": 42,
     "timeout": 120,  # Request timeout in seconds.
-
-    # Reflexion agent settings.
-    "reflexion_max_attempts": 2,
-    "reflexion_reflection_limit": 3,
 
     # OCM agent settings.
     "ocm_codegen_max_attempts": 3,
     "ocm_knowledge_load_path": None,
+
+    # WorldEvolver baseline settings.
+    "worldevolver_policy_max_tokens": 256,
+    "worldevolver_world_model_max_tokens": 1000,
+    "worldevolver_context_length": 32768,
+    "worldevolver_sf_confidence_pct": 0.0,
 }
 
 
@@ -98,19 +108,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--benchmark", choices=sorted(BENCHMARKS), default=None)  # Override default benchmark.
     parser.add_argument("--split", default=None)  # Override dataset split.
     parser.add_argument("--task-limit", type=int, default=None)  # Override task cap.
+    parser.add_argument("--task-offset", type=int, default=None)
+    parser.add_argument("--num-trials", type=int, default=None)
 
     # Run output controls.
     parser.add_argument("--output-dir", default=None)  # Override parent output directory.
     parser.add_argument("--run-name", default=None)  # Override run folder name.
+    parser.add_argument("--resume", action="store_true", default=None)  # Resume completed tasks in the run folder.
+    parser.add_argument("--wandb-project", default=None)  # Enable Weights & Biases tracking.
+    parser.add_argument("--wandb-entity", default=None)  # Override the default Weights & Biases entity.
+    parser.add_argument("--wandb-run-id", default=None)  # Override the W&B run id used for resume.
     parser.add_argument("--alfworld-step-limit", type=int, default=None)  # ALFWorld action budget.
     parser.add_argument("--sciworld-simplification", default=None)  # ScienceWorld simplification string, e.g. easy.
     parser.add_argument("--sciworld-env-step-limit", type=int, default=None)  # ScienceWorld internal move budget.
+    parser.add_argument("--sciworld-agent-step-limit", type=int, default=None)
     parser.add_argument("--plancraft-step-limit", type=int, default=None)  # Plancraft action budget.
     parser.add_argument("--webshop-step-limit", type=int, default=None)  # WebShop action budget.
-    parser.add_argument("--intercode-step-limit", type=int, default=None)  # InterCode action budget.
 
     # Agent backend selection.
-    parser.add_argument("--agent", choices=["react", "reflexion", "ocm"], default=None)  # Override agent backend.
+    parser.add_argument("--agent", choices=["react", "ocm", "worldevolver"], default=None)  # Override agent backend.
 
     # Base agent model settings.
     parser.add_argument("--provider", choices=sorted(PROVIDER_BASE_URLS), default=None)  # Override provider.
@@ -118,11 +134,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-url", default=None)  # Override OpenAI-compatible API base URL.
     parser.add_argument("--api-key", default=None)  # Override API key.
     parser.add_argument("--temperature", type=float, default=None)  # Override sampling temperature.
+    parser.add_argument("--top-p", type=float, default=None)
+    parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--timeout", type=int, default=None)  # Override request timeout.
-    parser.add_argument("--reflexion-max-attempts", type=int, default=None)
-    parser.add_argument("--reflexion-reflection-limit", type=int, default=None)
     parser.add_argument("--ocm-codegen-max-attempts", type=int, default=None)
     parser.add_argument("--ocm-knowledge-load-path", default=None)
+    parser.add_argument("--worldevolver-policy-max-tokens", type=int, default=None)
+    parser.add_argument("--worldevolver-world-model-max-tokens", type=int, default=None)
+    parser.add_argument("--worldevolver-context-length", type=int, default=None)
+    parser.add_argument("--worldevolver-sf-confidence-pct", type=float, default=None)
     return parser
 
 

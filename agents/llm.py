@@ -89,6 +89,8 @@ class OpenAIChatClient:
         model: str,
         messages: Sequence[dict[str, Any]],
         temperature: float,
+        top_p: float | None = None,
+        seed: int | None = None,
         stop: Sequence[str] | None = None,
         tools: Sequence[dict[str, Any]] | None = None,
         tool_choice: Any = None,
@@ -105,6 +107,10 @@ class OpenAIChatClient:
         }
         if max_tokens is not None:
             kwargs["max_tokens"] = int(max_tokens)
+        if top_p is not None:
+            kwargs["top_p"] = float(top_p)
+        if seed is not None:
+            kwargs["seed"] = int(seed)
         if "openrouter.ai" in self.base_url:
             kwargs["extra_body"] = {"reasoning": {"enabled": False}}
         response = self._create_with_retry(**kwargs)

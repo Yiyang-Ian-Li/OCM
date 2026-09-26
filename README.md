@@ -24,15 +24,22 @@ During evaluation, OCM maintains two connected code bases:
 - procedural knowledge under `knowledge/procedural_knowledge/`, which records
   reusable interaction patterns that import and use the object model.
 
-After each episode, OCM reflects on the trajectory, updates both knowledge
-bases, and verifies that procedures execute against the updated object model.
-During future interaction, the agent uses progressive disclosure to inspect
-compact code signatures first and read source only when needed.
+The canonical `ocm` agent combines OCM's structured code memory with a
+WorldEvolver-style predict-observe-update loop. The policy uses OCM to choose a
+primitive action, then the same object/procedural code is used to predict the
+action's immediate observable outcome before execution. The prediction records
+which OCM entries support it, turning otherwise passive memory into a falsifiable
+hypothesis. The policy then sees that fallible foresight and may keep or revise
+its proposed action. If it revises, OCM predicts the final action as well, so the
+prediction later used for learning always corresponds to the action actually
+executed.
 
-Each environment action also carries a prediction of its immediate observable
-outcome and cites the object and procedure symbols that support it. The realized
-transition then provides localized evidence for confirming or revising those
-knowledge units during the episode update.
+After execution, the prediction is paired with the real observation, reward,
+success, and validity signals. This residual is visible to the next policy step
+and, at episode end, updates the same object and procedural code used for future
+predictions. This gives one closed loop: act from OCM, predict, observe, and
+revise OCM. The logs expose prediction coverage, memory references, and validity
+calibration so the mechanism can be audited separately from benchmark reward.
 
 The runner currently supports:
 
@@ -40,7 +47,6 @@ The runner currently supports:
 - `alfworld`: ALFWorld household instruction-following tasks.
 - `plancraft`: Minecraft-style crafting tasks.
 - `webshop`: WebShop text shopping tasks.
-- `intercode`: InterCode Bash tasks.
 
 Raw benchmark repositories, cached datasets, model outputs, and analysis
 artifacts are intentionally not included in this source release.
@@ -50,8 +56,8 @@ artifacts are intentionally not included in this source release.
 Create a Python environment and install the dependencies:
 
 ```bash
-conda create -n ocm python=3.10
-conda activate ocm
+conda create -n oom python=3.10
+conda activate oom
 python -m pip install -r requirements.txt
 ```
 
@@ -78,9 +84,10 @@ python main.py \
   --model-name gpt-4.1-mini \
   --agent ocm \
   --benchmark sciworld \
-  --split test \
+  --split agentboard_test \
   --task-limit 3 \
-  --output-dir outputs/gpt-4.1-mini
+  --run-name ocm-smoke \
+  --output-dir outputs
 ```
 
 By default the runner uses provider `openai`, model `gpt-4.1-mini`,
@@ -88,15 +95,14 @@ temperature `0.0`, and writes results under `outputs/`.
 
 ## Benchmark Splits
 
-- `sciworld`: `train` (1483), `dev` (194), `test` (211)
+- `sciworld`: `agentboard_test` (90), `train` (1483), `dev` (194),
+  `test` (149; legacy evaluation protocol), `test_full` (1819)
 - `alfworld`: `train` (3553), `eval_in_distribution` (140),
   `eval_out_of_distribution` (134)
 - `plancraft`: `train` (1145), `val` (570), `val.small` (110),
   `val.small.easy` (100), `val.repeated` (570), `test` (580),
   `test.small` (117), `test.small.easy` (100)
 - `webshop`: `train` (1824), `test` (200), `test500` (500), `full` (12087)
-- `intercode`: `bash` (200), `bash_fs1` (60), `bash_fs2` (53),
-  `bash_fs3` (60), `bash_fs4` (27), `bash_quickstart` (24)
 
 Default step limits:
 
@@ -104,7 +110,6 @@ Default step limits:
 - `alfworld`: `50`
 - `plancraft`: `30`
 - `webshop`: `15`
-- `intercode`: `10`
 
 ## License
 

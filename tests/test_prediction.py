@@ -1,108 +1,132 @@
-from __future__ import annotations
-
+import tempfile
 import unittest
 from pathlib import Path
-from tempfile import TemporaryDirectory
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
 
-from agents.ocm_agent.agent import OCMAgent
-from agents.ocm_agent.prediction import parse_prediction_provenance
-from benchmarks.base import StepResult
+from agents.ocm_agent.knowledge import (
+    KnowledgeStore,
+    parse_knowledge_updates,
+    parse_reflection_plan,
+    validate_knowledge_updates,
+    validate_reflection_plan,
+)
+from agents.ocm_agent.prediction import (
+    evaluate_observed_transition,
+    parse_action_prediction,
+)
 
 
-class PredictionProvenanceTest(unittest.TestCase):
-    def test_parses_prediction_and_typed_grounding(self) -> None:
-        parsed = parse_prediction_provenance(
-            "\n".join(
-                [
-                    "Thought: Heat the water.",
-                    "Prediction: The water temperature will increase.",
-                    "Grounding: object.Stove.heat, procedural.heating_substance",
-                    "Action: turn on stove",
-                ]
+class PredictionTest(unittest.TestCase):
+    def test_prediction_is_bound_to_executed_action_and_known_evidence(self) -> None:
+        prediction = parse_action_prediction(
+            '{"outcome":"task completes","valid":true,"effect":"complete",'
+            '"knowledge":["object.Animal","invented.Rule"]}',
+            "focus on crocodile",
+            available_knowledge=["object.Animal"],
+        )
+        self.assertEqual(prediction["action"], "focus on crocodile")
+        self.assertEqual(prediction["knowledge"], ["object.Animal"])
+        self.assertEqual(prediction["effect"], "complete")
+
+    def test_simple_format_fallback_handles_wrappers_and_missing_delimiters(self) -> None:
+        parsed = parse_action_prediction(
+            '{"outcome":"door opens","valid":true,"effect":"advance","knowledge":[]',
+            "open door",
+        )
+        self.assertEqual(parsed["outcome"], "door opens")
+        wrapped = parse_action_prediction(
+            '<tool_call>\n</think>\n'
+            '{"outcome":"door opens","valid":true,"effect":"advance","knowledge":[]}',
+            "open door",
+        )
+        self.assertEqual(wrapped["outcome"], "door opens")
+        with self.assertRaises(ValueError):
+            parse_action_prediction(
+                '{"outcome":"unterminated,"valid":true,"effect":"advance"}',
+                "open door",
             )
+
+    def test_observation_checks_only_observable_fields(self) -> None:
+        result = evaluate_observed_transition(
+            {"valid": False, "success": None},
+            reward=0.5,
+            previous_reward=0.0,
+            done=False,
+            success=False,
+            invalid_action=True,
         )
+        self.assertTrue(result["validity_correct"])
+        self.assertEqual(result["actual"]["reward_delta"], 0.5)
 
-        self.assertEqual(parsed["prediction"], "The water temperature will increase.")
-        self.assertEqual(parsed["object_symbols"], ["object.Stove.heat"])
-        self.assertEqual(parsed["procedural_symbols"], ["procedural.heating_substance"])
-        self.assertEqual(parsed["unresolved_symbols"], [])
 
-    def test_normalizes_long_prefixes_and_deduplicates(self) -> None:
-        parsed = parse_prediction_provenance(
-            "Prediction: The container will open.\n"
-            "Grounding: object_knowledge.Container.open, object.Container.open; "
-            "procedural_knowledge.open_container"
-        )
-
-        self.assertEqual(parsed["object_symbols"], ["object.Container.open"])
-        self.assertEqual(parsed["procedural_symbols"], ["procedural.open_container"])
-
-    def test_accepts_missing_or_empty_grounding(self) -> None:
-        missing = parse_prediction_provenance("Action: look around")
-        empty = parse_prediction_provenance(
-            "Prediction: The room description will be shown.\nGrounding: none\nAction: look around"
-        )
-
-        self.assertEqual(missing["prediction"], "")
-        self.assertEqual(missing["object_symbols"], [])
-        self.assertEqual(empty["object_symbols"], [])
-        self.assertEqual(empty["procedural_symbols"], [])
-
-    def test_preserves_untyped_references_for_audit(self) -> None:
-        parsed = parse_prediction_provenance(
-            "Prediction: The item will move.\nGrounding: Inventory.move, `object.Item`"
-        )
-
-        self.assertEqual(parsed["object_symbols"], ["object.Item"])
-        self.assertEqual(parsed["unresolved_symbols"], ["Inventory.move"])
-
-    def test_prediction_reaches_episode_reflection(self) -> None:
-        responses = iter(
-            [
-                "Thought: Open it.\nPrediction: The box will open.\nGrounding: none\nAction: open box",
-                '{"object_knowledge_updates": [], "procedural_knowledge_updates": [], '
-                '"inspect_objects": [], "inspect_procedural": []}',
-                '{"object_knowledge": [], "procedural_knowledge": []}',
-            ]
-        )
-        fake_client = MagicMock()
-        fake_client.client = MagicMock()
-        fake_client.create_chat_completion.side_effect = lambda **kwargs: SimpleNamespace(content=next(responses))
-
-        with TemporaryDirectory() as tmp, patch(
-            "agents.ocm_agent.agent.OpenAIChatClient",
-            return_value=fake_client,
-        ):
-            agent = OCMAgent(
-                {
-                    "model_name": "gpt-4.1-mini",
-                    "api_key": "test",
-                    "base_url": "https://example.invalid/v1",
-                    "output_dir": Path(tmp),
-                }
+class KnowledgeStoreTest(unittest.TestCase):
+    def test_model_context_contains_complete_object_and_procedure_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = KnowledgeStore.create(Path(tmp))
+            store.commit_knowledge_updates(
+                object_updates=[
+                    {
+                        "existing_name": "",
+                        "name": "Animal",
+                        "code": "class Animal:\n    lifespan_order = [('crocodile', 'rabbit')]\n",
+                    }
+                ],
+                procedural_updates=[
+                    {
+                        "existing_name": "",
+                        "name": "choose_longest",
+                        "code": "from object_knowledge import Animal\n\ndef known_pairs():\n    return Animal.lifespan_order\n",
+                    }
+                ],
             )
-            agent.on_episode_start(benchmark_name="test", observation="A closed box is here.")
-            action = agent.act("A closed box is here.")
-            agent.on_step(
-                step_idx=1,
-                observation="A closed box is here.",
-                action=action,
-                outcome=StepResult("The box is locked.", invalid_action=True),
-                next_observation="The box is locked.",
+            context = store.model_context()
+            self.assertIn("('crocodile', 'rabbit')", context)
+            self.assertIn("procedural_knowledge/choose_longest.py", context)
+            self.assertIn("Knowledge ids: object.Animal", context)
+            self.assertIn("Knowledge id: procedural.choose_longest", context)
+            self.assertEqual(
+                store.knowledge_ids(),
+                ["object.Animal", "procedural.choose_longest"],
             )
-            artifact = agent.on_episode_end({"success": False})
 
-        self.assertEqual(action, "open box")
-        step = artifact["decision_log"][0]
-        self.assertEqual(step["prediction"], "The box will open.")
-        self.assertEqual(step["next_observation"], "The box is locked.")
-        reflection_call = fake_client.create_chat_completion.call_args_list[1]
-        reflection_payload = reflection_call.kwargs["messages"][1]["content"]
-        self.assertIn('"prediction": "The box will open."', reflection_payload)
-        self.assertIn('"next_observation": "The box is locked."', reflection_payload)
+    def test_plan_and_implementation_validation(self) -> None:
+        plan = parse_reflection_plan(
+            '{"object_knowledge_updates":[{"target":"Animal","operation":"create",'
+            '"lesson":"crocodiles outlive rabbits","evidence":"successful focus"}],'
+            '"procedural_knowledge_updates":[]}'
+        )
+        validate_reflection_plan(
+            plan, object_names=set(), procedural_names=set()
+        )
+        objects, procedures = parse_knowledge_updates(
+            '{"object_knowledge":[{"existing_name":"","name":"Animal",'
+            '"code":"class Animal:\\n    pass\\n"}],"procedural_knowledge":[]}'
+        )
+        validate_knowledge_updates(
+            plan,
+            object_updates=objects,
+            procedural_updates=procedures,
+        )
 
-
+    def test_plan_normalizes_procedure_to_file_and_rejects_location_like_class_name(self) -> None:
+        plan = parse_reflection_plan(
+            '{"object_knowledge_updates":[],"procedural_knowledge_updates":['
+            '{"target":"procedural.navigation.recover","operation":"update",'
+            '"lesson":"retry with observed syntax","evidence":"invalid then valid"}]}'
+        )
+        self.assertEqual(
+            plan["procedural_knowledge_updates"][0]["target"], "navigation"
+        )
+        validate_reflection_plan(
+            plan, object_names=set(), procedural_names={"navigation"}
+        )
+        bad = parse_reflection_plan(
+            '{"object_knowledge_updates":[{"target":"outside","operation":"create",'
+            '"lesson":"stores the room","evidence":"room observation"}],'
+            '"procedural_knowledge_updates":[]}'
+        )
+        with self.assertRaisesRegex(ValueError, "PascalCase"):
+            validate_reflection_plan(
+                bad, object_names=set(), procedural_names={"navigation"}
+            )
 if __name__ == "__main__":
     unittest.main()

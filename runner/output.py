@@ -10,14 +10,14 @@ from typing import Any
 from .state import SENSITIVE_CONFIG_KEYS
 
 
-def configure_logging(output_dir: Path) -> None:
+def configure_logging(output_dir: Path, *, append: bool = False) -> None:
     class SafeScienceWorldLogFilter(logging.Filter):
         def filter(self, record: logging.LogRecord) -> bool:
             if record.name.startswith("scienceworld") and record.msg == "ScienceWorld server running on port":
                 record.msg = "ScienceWorld server running on port %s"
             return True
 
-    file_handler = logging.FileHandler(output_dir / "run.log", mode="w")
+    file_handler = logging.FileHandler(output_dir / "run.log", mode="a" if append else "w")
     logging.basicConfig(
         format="%(message)s",
         handlers=[logging.StreamHandler(), file_handler],
@@ -35,6 +35,11 @@ def prepare_output_dir(args: argparse.Namespace) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = args.run_name or f"{args.benchmark}_{timestamp}_{args.split}_{args.agent}_{model_fragment}"
     output_dir = Path(args.output_dir) / run_name
+    if output_dir.exists() and any(output_dir.iterdir()) and not args.resume:
+        raise FileExistsError(
+            f"Run directory already contains data: {output_dir}. "
+            "Use --resume for the same run or choose a new --run-name."
+        )
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
 

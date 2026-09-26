@@ -12,9 +12,6 @@ from benchmarks.sciworld.task import SciWorldTask
 from benchmarks.webshop.env import WebShopEnv
 from benchmarks.webshop.metrics import summarize_webshop
 from benchmarks.webshop.task import WebShopTask
-from benchmarks.intercode.env import InterCodeEnv
-from benchmarks.intercode.metrics import summarize_intercode
-from benchmarks.intercode.task import InterCodeTask
 
 
 BENCHMARKS = {
@@ -42,12 +39,6 @@ BENCHMARKS = {
         "reward_mode": "latest",
         "summarize": summarize_webshop,
     },
-    "intercode": {
-        "task_class": InterCodeTask,
-        "env_class": InterCodeEnv,
-        "reward_mode": "latest",
-        "summarize": summarize_intercode,
-    },
 }
 
 __all__ = [
@@ -60,6 +51,4 @@ __all__ = [
     "SciWorldTask",
     "WebShopEnv",
     "WebShopTask",
-    "InterCodeEnv",
-    "InterCodeTask",
 ]

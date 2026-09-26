@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -15,6 +16,21 @@ def load_benchmark_instruction(benchmark: str | None) -> str:
     if not path.exists():
         return ""
     return path.read_text(encoding="utf-8").strip()
+
+
+@lru_cache(maxsize=16)
+def load_benchmark_examples(benchmark: str | None) -> str:
+    if str(benchmark or "").strip().lower() != "sciworld":
+        return ""
+    root = Path(__file__).resolve().parents[1]
+    path = root / "baselines" / "WorldEvolver" / "src" / "prompts" / "ReactAgent" / "scienceworld_react.json"
+    if not path.exists():
+        return ""
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    examples = payload.get("examples") or ""
+    if isinstance(examples, list):
+        return "\n".join(str(item) for item in examples)
+    return str(examples).strip()
 
 def extract_action_candidate(raw_output: str) -> str:
     text = (raw_output or "").strip().replace("```", "")

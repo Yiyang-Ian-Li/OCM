@@ -40,6 +40,9 @@ class PlancraftEnv(BenchmarkEnv):
         observation, _, _, _, _ = self.env.step("")
         return str(observation.get("text", ""))
 
+    def world_model_goal(self) -> str:
+        return str(self.task.example.target)
+
     def step(self, action: str) -> StepResult:
         observation, reward, terminated, truncated, info = self.env.step(action.strip())
         text = str(observation.get("text", ""))

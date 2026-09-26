@@ -53,7 +53,19 @@ class AlfWorldEnv(BenchmarkEnv):
 
     def reset(self) -> str:
         observation, _info = self.env.reset()
-        return "\n".join(observation[0].split("\n\n")[1:])
+        initial_observation = "\n".join(observation[0].split("\n\n")[1:])
+        self._world_model_goal = next(
+            (
+                line.strip()
+                for line in initial_observation.splitlines()
+                if line.strip().lower().startswith("your task is")
+            ),
+            "",
+        )
+        return initial_observation
+
+    def world_model_goal(self) -> str:
+        return getattr(self, "_world_model_goal", "")
 
     def close(self) -> None:
         close = getattr(self.env, "close", None)

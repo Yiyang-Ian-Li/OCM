@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .base import Agent
-from .common import extract_action_candidate, load_benchmark_instruction
+from .common import extract_action_candidate, load_benchmark_examples, load_benchmark_instruction
 from .llm import OpenAIChatClient
 
 
@@ -19,6 +19,8 @@ class ReactAgent(Agent):
 
         base_url = self.config.get("base_url")
         self.temperature = self.config.get("temperature", 0.0)
+        self.top_p = self.config.get("top_p")
+        self.seed = self.config.get("seed")
         self.timeout = self.config.get("timeout", 120)
         self.llm = OpenAIChatClient(
             api_key=self.api_key,
@@ -26,7 +28,6 @@ class ReactAgent(Agent):
             timeout=self.timeout,
             usage_callback=self._record_token_usage,
         )
-        self.client = self.llm.client
         self.output_dir = Path(str(self.config.get("output_dir", ""))) if self.config.get("output_dir") else None
         self._task_log_path: Path | None = None
         self._task_log: dict[str, Any] = {}
@@ -58,26 +59,22 @@ class ReactAgent(Agent):
         trajectory: Sequence[dict[str, str]] | None,
     ) -> list[dict[str, str]]:
         benchmark_instruction = load_benchmark_instruction(self._benchmark_name)
-        messages = [
-            {
-                "role": "system",
-                "content": (
+        system_parts = [
+            (
                     "You are an interactive environment agent. "
                     "Follow benchmark guidance if provided. "
                     "Output exactly two lines in this format:\n"
                     "Thought: <brief reasoning>\n"
                     "Action: <one primitive environment action> "
                     "Do not output markdown or extra text."
-                ),
-            }
+            )
         ]
         if benchmark_instruction:
-            messages.append(
-                {
-                    "role": "system",
-                    "content": "Benchmark instruction:\n" + benchmark_instruction,
-                }
-            )
+            system_parts.append("Benchmark instruction:\n" + benchmark_instruction)
+        benchmark_examples = load_benchmark_examples(self._benchmark_name)
+        if benchmark_examples:
+            system_parts.append("Benchmark demonstration:\n" + benchmark_examples)
+        messages = [{"role": "system", "content": "\n\n".join(system_parts)}]
 
         # Keep conversation history for multi-step planning.
         for msg in list(trajectory or []):
@@ -95,22 +92,22 @@ class ReactAgent(Agent):
 
     def _build_prompt_preamble(self) -> list[dict[str, str]]:
         benchmark_instruction = load_benchmark_instruction(self._benchmark_name)
-        preamble = [
-            {
-                "role": "system",
-                "content": (
+        system_parts = [
+            (
                     "You are an interactive environment agent. "
                     "Follow benchmark guidance if provided. "
                     "Output exactly two lines in this format:\n"
                     "Thought: <brief reasoning>\n"
                     "Action: <one primitive environment action> "
                     "Do not output markdown or extra text."
-                ),
-            }
+            )
         ]
         if benchmark_instruction:
-            preamble.append({"role": "system", "content": "Benchmark instruction:\n" + benchmark_instruction})
-        return preamble
+            system_parts.append("Benchmark instruction:\n" + benchmark_instruction)
+        benchmark_examples = load_benchmark_examples(self._benchmark_name)
+        if benchmark_examples:
+            system_parts.append("Benchmark demonstration:\n" + benchmark_examples)
+        return [{"role": "system", "content": "\n\n".join(system_parts)}]
 
     def on_episode_start(
         self,
@@ -145,6 +142,8 @@ class ReactAgent(Agent):
             model=self.model_name,
             messages=messages,
             temperature=self.temperature,
+            top_p=self.top_p,
+            seed=self.seed,
             stop=self.stop_sequences or None,
             call_type="act",
         )

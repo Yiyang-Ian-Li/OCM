@@ -1,53 +1,71 @@
 from __future__ import annotations
 
-import re
+from typing import Any, Mapping, Sequence
+
+from .json_utils import load_jsonish
 
 
-def parse_prediction_provenance(raw_output: str) -> dict[str, object]:
-    prediction = _labeled_line(raw_output, "Prediction")
-    grounding_raw = _labeled_line(raw_output, "Grounding")
-    object_symbols: list[str] = []
-    procedural_symbols: list[str] = []
-    unresolved_symbols: list[str] = []
-
-    for raw_symbol in re.split(r"[,;]", grounding_raw):
-        symbol = raw_symbol.strip().strip("`[]()")
-        if not symbol or symbol.lower() in {"none", "n/a", "na"}:
-            continue
-        normalized = _normalize_symbol(symbol)
-        if normalized.startswith("object."):
-            object_symbols.append(normalized)
-        elif normalized.startswith("procedural."):
-            procedural_symbols.append(normalized)
-        else:
-            unresolved_symbols.append(symbol)
-
+def parse_action_prediction(
+    raw: str,
+    action: str,
+    *,
+    available_knowledge: Sequence[str] = (),
+) -> dict[str, Any]:
+    payload = load_jsonish(raw)
+    if not isinstance(payload, Mapping):
+        raise ValueError("world-model prediction must be a JSON object")
+    outcome = str(payload.get("outcome") or "").strip()
+    valid = payload.get("valid")
+    effect = str(payload.get("effect") or "").strip().lower()
+    if not outcome:
+        raise ValueError("prediction needs a concise outcome")
+    if valid not in {True, False, None}:
+        raise ValueError("prediction valid must be true, false, or null")
+    if effect not in {"advance", "neutral", "harm", "complete", "unknown"}:
+        raise ValueError(
+            "prediction effect must be advance, neutral, harm, complete, or unknown"
+        )
+    known = set(available_knowledge)
+    references = []
+    values = payload.get("knowledge")
+    for value in values if isinstance(values, list) else []:
+        reference = str(value).strip().strip("`")
+        if reference and reference in known and reference not in references:
+            references.append(reference)
     return {
-        "prediction": prediction,
-        "grounding_raw": grounding_raw,
-        "object_symbols": _dedupe(object_symbols),
-        "procedural_symbols": _dedupe(procedural_symbols),
-        "unresolved_symbols": _dedupe(unresolved_symbols),
+        "action": action,
+        "outcome": outcome,
+        "valid": valid,
+        "effect": effect,
+        "knowledge": references,
     }
 
 
-def _labeled_line(text: str, label: str) -> str:
-    match = re.search(
-        rf"^\s*{re.escape(label)}\s*:\s*(.*?)\s*$",
-        text or "",
-        flags=re.IGNORECASE | re.MULTILINE,
+def evaluate_observed_transition(
+    prediction: Mapping[str, Any],
+    *,
+    reward: float | None,
+    previous_reward: float | None,
+    done: bool,
+    success: bool | None,
+    invalid_action: bool,
+) -> dict[str, Any]:
+    predicted_valid = prediction.get("valid")
+    validity_correct = (
+        None
+        if predicted_valid is None
+        else bool(predicted_valid) is (not bool(invalid_action))
     )
-    return match.group(1).strip() if match else ""
-
-
-def _normalize_symbol(symbol: str) -> str:
-    lowered = symbol.lower()
-    if lowered.startswith("object_knowledge."):
-        return "object." + symbol.split(".", 1)[1]
-    if lowered.startswith("procedural_knowledge."):
-        return "procedural." + symbol.split(".", 1)[1]
-    return symbol
-
-
-def _dedupe(items: list[str]) -> list[str]:
-    return list(dict.fromkeys(items))
+    reward_delta = None
+    if reward is not None and previous_reward is not None:
+        reward_delta = float(reward) - float(previous_reward)
+    return {
+        "actual": {
+            "reward": reward,
+            "reward_delta": reward_delta,
+            "done": bool(done),
+            "success": success,
+            "invalid_action": bool(invalid_action),
+        },
+        "validity_correct": validity_correct,
+    }

@@ -5,194 +5,135 @@ from typing import Any, Mapping, Sequence
 
 
 KNOWLEDGE_ROLES = (
-    "object_knowledge.py models reusable environment entities, states, affordances, constraints, relations, "
-    "and state changes.\n"
-    "procedural_knowledge/*.py stores compact action-facing lessons that use object_knowledge types: workflows, "
-    "rules, syntax constraints, failure patterns, decision heuristics, or recovery principles."
+    "object_knowledge.py stores reusable facts and mechanisms about environment entities, states, "
+    "affordances, relations, and transitions. procedural_knowledge/*.py stores reusable action-facing "
+    "lessons such as workflows, preconditions, syntax, failure modes, and recovery rules."
 )
 
-KNOWLEDGE_DESIGN_PRINCIPLES = (
-    "Separate the world model from action lessons. Ground every update in observations, invalid-action feedback, "
-    "reward, done, or success signals. Treat existing knowledge as provisional: preserve it when supported, refine "
-    "it when incomplete, and replace it when contradicted. Successful episodes show what works; failed episodes "
-    "mostly show preconditions, invalid syntax, missing observations, failure causes, and recovery. Predictions are "
-    "commitments made before observing an action's outcome: use prediction-observation agreement as support and "
-    "mismatch as a counterexample to the cited knowledge. Keep final knowledge compact and reusable."
-)
 
-REFLECTION_RULES = {
-    "output": [
-        "Return JSON only with keys: object_knowledge_updates, procedural_knowledge_updates, inspect_objects, inspect_procedural.",
-        "Each planned update should be compact: target, operation, lesson, evidence, reason.",
-        "operation is create, update, or replace.",
-        "inspect_objects contains object top-level names or ClassName.method_name names to inspect.",
-        "inspect_procedural contains procedural file stems without .py to inspect.",
-    ],
-    "selection": [
-        "Plan only reusable knowledge supported by the episode.",
-        "Use object updates for entities, states, affordances, constraints, relations, or mappings.",
-        "Use procedural updates for workflows, rules, syntax constraints, failure patterns, heuristics, or recovery.",
-        "Attribute an incorrect predicted environment effect to the cited object knowledge.",
-        "Attribute an unsuitable decision whose predicted effect was accurate to the cited procedural knowledge.",
-        "Skip one-offs, exact locations, task ids, raw trajectories, and full action scripts.",
-    ],
-    "content": [
-        "Evidence should mention the relevant observation, invalid feedback, reward, done, or success signal.",
-        "Use each step's prediction and realized next observation to identify supported or contradicted knowledge.",
-        "When a prediction is contradicted, inspect and revise the object or procedural symbols cited in that step before creating unrelated knowledge.",
-        "Treat semantic agreement as support even when prediction and observation use different wording.",
-        "If existing knowledge is contradicted, plan replace rather than only adding new knowledge.",
-        "For procedural updates, name the object_knowledge types or helpers the lesson should use.",
-    ],
-}
-
-KNOWLEDGE_UPDATE_SCHEMA = (
-    "Return JSON only with keys 'object_knowledge' and 'procedural_knowledge'. Each key maps to a list "
-    "of objects with fields 'existing_name', 'name', and 'code'. For new knowledge, existing_name is empty. "
-    "For replacement or rename, existing_name is the current object class name or procedural file stem. "
-    "name is the resulting class name or file stem. code is the complete replacement code for that item."
-)
-
-KNOWLEDGE_UPDATE_RULES = {
-    "object_knowledge": [
-        "Write compact classes or top-level helpers for reusable environment entities, states, affordances, constraints, relations, and mappings.",
-        "Model only what the episode evidence supports.",
-        "Use simple defaults so deterministic checks can instantiate classes without live environment access.",
-        "Never import object_knowledge from inside object_knowledge.py.",
-        "Do not write task solutions, action scripts, or episode transcripts.",
-    ],
-    "procedural_knowledge": [
-        "Each file represents one compact reusable interaction lesson.",
-        "Import object_knowledge classes or helpers instead of redefining environment entities.",
-        "Use short docstrings, small constants, typed records, and focused helpers.",
-        "Action strings are allowed only as primitive syntax examples, not complete scripts or next-action APIs.",
-        "Helpers should classify, explain, check applicability, or expose examples; they should not choose the next action.",
-        "When replacing an existing file, remove claims contradicted by the episode.",
-    ],
-    "quality": [
-        "Use retrieval-friendly names and brief docstrings.",
-        "Keep detailed evidence in the reflection plan, not in long code comments or docstrings.",
-        "Every procedural file must include a lightweight no-argument __verify__() with deterministic assertions.",
-        "__verify__ should check imports/references and simple helper behavior.",
-        "__verify__ must not call the live environment or external services.",
-        "The candidate knowledge must compile and import successfully.",
-    ],
-}
-
-
-def action_messages(
+def policy_messages(
     *,
     benchmark_instruction: str,
-    object_signatures: str,
-    procedural_index: str,
-    expanded_source: str,
+    benchmark_examples: str,
+    knowledge_context: str,
     observation: str,
     trajectory: Sequence[dict[str, str]] | None,
+    foresight: Mapping[str, Any] | None = None,
 ) -> list[dict[str, str]]:
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are an interactive environment agent with access to two learned Python resources. "
-                "object_knowledge.py describes reusable environment object types, observable states, affordances, "
-                "constraints, relations, and state changes. procedural_knowledge/ describes reusable interaction "
-                "lessons: workflows, rules, failure patterns, insights, syntax constraints, decision heuristics, "
-                "and recovery strategies that use those object types. These resources are for reading and reasoning, "
-                "not for direct execution. Do not copy internal class, file, or function names as environment actions. "
-                "Use signatures, procedural index entries, and any inspected code to choose the next real text action. "
-                "Inspect relevant learned resources when you are uncertain about object affordances, action syntax, "
-                "preconditions, success signals, failure causes, or recovery. Before acting, commit to one concise, "
-                "falsifiable prediction of the immediate observable outcome and cite the exact learned symbols that "
-                "support it. Output exactly four lines: a brief Thought line, a Prediction line, a Grounding line, "
-                "and an Action line. Use Grounding: none when no learned symbol supports the prediction. Use internal "
-                "inspect only to read learned resources, for example: "
-                "Action: Inspect[object.Container, procedural.heating_substance]. Otherwise the Action line must "
-                "be one primitive environment action. Use this format:\n"
-                "Thought: <brief reasoning>\n"
-                "Prediction: <immediate observable outcome if the action is executed>\n"
-                "Grounding: <comma-separated object.* and procedural.* symbols, or none>\n"
-                "Action: <one primitive environment action>"
-            ),
-        }
+    system_parts = [
+        (
+            "You are an interactive environment agent. Follow benchmark guidance if provided. "
+            "Choose the next primitive action that best advances the task. Use learned OCM code as a fallible prior. "
+            "Prior predictions appear immediately before actions in the trajectory; treat the following environment "
+            "observation as ground truth and adapt when they disagree. If foresight is supplied, it is a fallible "
+            "prediction for a proposed action: decide whether to keep or revise that action. Output exactly two lines:\n"
+            "Thought: <brief reasoning>\n"
+            "Action: <one primitive environment action>"
+        )
     ]
     if benchmark_instruction:
-        messages.append({"role": "system", "content": "Benchmark instruction:\n" + benchmark_instruction})
-    context = (
-        "object_knowledge.py signatures:\n"
-        + (object_signatures.strip() or "(empty)")
-        + "\n\nprocedural_knowledge/index.py:\n```python\n"
-        + (procedural_index.strip() or "PROCEDURAL_KNOWLEDGE = {}")
+        system_parts.append("Benchmark instruction:\n" + benchmark_instruction)
+    if benchmark_examples.strip():
+        system_parts.append("Benchmark demonstration:\n" + benchmark_examples.strip())
+    system_parts.append(
+        "Learned OCM code:\n"
+        "```python\n"
+        + (knowledge_context.strip() or "# empty")
         + "\n```"
     )
-    if expanded_source.strip():
-        context += "\n\nInspected learned code available in this episode:\n```python\n" + expanded_source.strip() + "\n```"
-    messages.append({"role": "system", "content": context})
-    for msg in list(trajectory or []):
-        if not isinstance(msg, dict):
-            continue
-        role = msg.get("role")
-        content = msg.get("content")
-        if role in {"user", "assistant"} and isinstance(content, str):
-            messages.append({"role": role, "content": content})
-    if not messages or messages[-1].get("role") != "user" or messages[-1].get("content") != observation:
-        messages.append({"role": "user", "content": observation})
+    messages = _conversation_messages(system_parts, observation, trajectory)
+    if foresight:
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Foresight for the proposed action:\n"
+                    + json.dumps(dict(foresight), ensure_ascii=True)
+                    + "\nReturn the action you now choose. It may be the same action or a revision."
+                ),
+            }
+        )
     return messages
 
 
-def plain_action_messages(
+def prediction_messages(
     *,
     benchmark_instruction: str,
+    knowledge_context: str,
     observation: str,
     trajectory: Sequence[dict[str, str]] | None,
+    action: str,
+    previous_error: str | None = None,
 ) -> list[dict[str, str]]:
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are an interactive environment agent. "
-                "Follow benchmark guidance if provided. "
-                "Before acting, commit to one concise, falsifiable prediction of the immediate observable outcome. "
-                "Output exactly four lines in this format:\n"
-                "Thought: <brief reasoning>\n"
-                "Prediction: <immediate observable outcome if the action is executed>\n"
-                "Grounding: none\n"
-                "Action: <one primitive environment action>\n"
-                "Do not output markdown or extra text."
-            ),
-        }
+    system_parts = [
+        (
+            "You are the agent's explicit world model. "
+            "Before the proposed action is executed, predict its immediate externally observable outcome and whether it advances the "
+            "current task. Use the observed trajectory as ground truth and the learned OCM code as fallible prior "
+            "knowledge. The prediction is a hypothesis, not observed evidence. valid is true, false, or null when "
+            "validity is genuinely unknown. effect is advance, neutral, harm, complete, or unknown. "
+            "knowledge lists only exact top-level ids visibly present in the supplied OCM code that materially "
+            "support the prediction; otherwise use an empty list. A cited knowledge item's code must logically entail "
+            "the predicted outcome in the observed state; never cite a relevant-looking item while predicting the "
+            "opposite of its rule. Keep outcome to one short sentence. Return JSON only: "
+            '{"outcome":"...","valid":true|false|null,'
+            '"effect":"advance|neutral|harm|complete|unknown",'
+            '"knowledge":["object.Name"|"procedural.name"]}'
+        )
     ]
     if benchmark_instruction:
-        messages.append({"role": "system", "content": "Benchmark instruction:\n" + benchmark_instruction})
-    for msg in list(trajectory or []):
-        if not isinstance(msg, dict):
-            continue
-        role = msg.get("role")
-        content = msg.get("content")
-        if role in {"user", "assistant"} and isinstance(content, str):
-            messages.append({"role": role, "content": content})
-    if not messages or messages[-1].get("role") != "user" or messages[-1].get("content") != observation:
-        messages.append({"role": "user", "content": observation})
+        system_parts.append("Benchmark instruction:\n" + benchmark_instruction)
+    system_parts.append(
+        "Learned OCM code:\n```python\n"
+        + (knowledge_context.strip() or "# empty")
+        + "\n```"
+    )
+    if previous_error:
+        system_parts.append("The previous output was invalid: " + previous_error)
+    messages = _conversation_messages(system_parts, observation, trajectory)
+    messages.append(
+        {
+            "role": "user",
+            "content": (
+                "Predict the immediate result of this proposed action:\n"
+                + json.dumps({"action": action}, ensure_ascii=True)
+            ),
+        }
+    )
     return messages
 
 
 def reflection_messages(
     *,
     benchmark_name: str,
+    task_context: str,
     object_signatures: str,
     procedural_index: str,
     steps: Sequence[Mapping[str, Any]],
     result_meta: Mapping[str, Any],
+    previous_error: str | None = None,
 ) -> list[dict[str, str]]:
     return [
         {
             "role": "system",
             "content": (
-                "Analyze one completed environment episode and write a concise update plan for two learned Python "
-                "resources that will be read during future decisions.\n\n"
+                "Reflect on one completed episode to maintain an object-centric Python world model. "
                 + KNOWLEDGE_ROLES
-                + "\n\nDesign principles:\n"
-                + KNOWLEDGE_DESIGN_PRINCIPLES
-                + "\n\nReturn JSON only. Do not return Markdown."
+                + " Compare each pre-action prediction with the resulting environment transition. A prediction is a "
+                "hypothesis; observations, reward, success, and invalid-action feedback are evidence. Use their residual "
+                "to add, revise, or leave unchanged compact reusable knowledge. New evidence may update knowledge the "
+                "prediction did not cite, and uncertain or conflicting evidence may warrant no update. Prefer the smallest "
+                "object property, relation, transition, or procedural precondition that explains an observed difference. "
+                "The task context defines what reward and success mean but is not itself environment evidence. Return JSON "
+                "only with keys "
+                "object_knowledge_updates and procedural_knowledge_updates. Each value is a list with at most one "
+                "item containing target, operation (create, update, or replace), lesson, and evidence. Return empty "
+                "lists when the episode adds nothing reusable. An object target is a PascalCase semantic entity "
+                "category or mechanism (for example Container, Animal, or Material), never a room, location, named "
+                "instance, or method. Store observed relations among named types inside their shared category rather "
+                "than copying the scene inventory. A procedural target is exactly a procedural file stem from the "
+                "catalog, or a short snake_case stem for a new file; never append a function name to it. For an "
+                "existing item, copy its top-level catalog id exactly."
             ),
         },
         {
@@ -200,11 +141,13 @@ def reflection_messages(
             "content": json.dumps(
                 {
                     "benchmark": benchmark_name,
+                    "task_context": task_context,
                     "result": dict(result_meta),
-                    "object_knowledge_signatures": object_signatures,
-                    "procedural_knowledge_index_py": procedural_index,
-                    "episode_steps": list(steps),
-                    "rules": REFLECTION_RULES,
+                    "object_knowledge_catalog": object_signatures,
+                    "procedural_knowledge_catalog": procedural_index,
+                    "executed_prediction_traces": _reflection_evidence(steps),
+                    "executed_outcome_contrasts": _outcome_contrasts(steps),
+                    "previous_error": previous_error,
                 },
                 ensure_ascii=True,
                 indent=2,
@@ -218,39 +161,131 @@ def knowledge_update_messages(
     object_signatures: str,
     procedural_index: str,
     update_plan: Mapping[str, Any],
-    inspected_source: str,
-    steps: Sequence[Mapping[str, Any]],
-    result_meta: Mapping[str, Any],
+    editable_source: str,
     previous_error: str | None = None,
 ) -> list[dict[str, str]]:
+    system = (
+        "Implement exactly the validated update plan for an object-centric Python world model. "
+        + KNOWLEDGE_ROLES
+        + " Return only one apply_patch block, from *** Begin Patch through *** End Patch. Patch exactly the files "
+        "named by the plan: object_knowledge.py for object targets and procedural_knowledge/<target>.py for procedural "
+        "targets. Use minimal hunks that preserve unrelated code; never reproduce a complete existing file. For a new "
+        "procedural target, add its file. Keep knowledge compact, general, and readable by a language model. Implement "
+        "only the reusable claims in the plan without adding unsupported claims. Object code represents entities, "
+        "states, relations, and transitions; procedural code represents action-facing workflows and preconditions and "
+        "may import object_knowledge. Prefer compact constants and small query helpers. The patched code must compile."
+    )
+    if previous_error:
+        system += " The previous implementation was rejected: " + previous_error
     return [
-        {
-            "role": "system",
-            "content": (
-                "Implement updates from a completed environment episode for two learned Python resources that "
-                "future decisions will read.\n\n"
-                + KNOWLEDGE_ROLES
-                + "\n\nDesign principles:\n"
-                + KNOWLEDGE_DESIGN_PRINCIPLES
-                + "\n\n"
-                + KNOWLEDGE_UPDATE_SCHEMA
-            ),
-        },
+        {"role": "system", "content": system},
         {
             "role": "user",
             "content": json.dumps(
                 {
-                    "object_knowledge_signatures": object_signatures,
-                    "procedural_knowledge_index_py": procedural_index,
-                    "update_plan": update_plan,
-                    "inspected_source": inspected_source,
-                    "result": dict(result_meta),
-                    "episode_steps": list(steps),
-                    "previous_error": previous_error,
-                    "rules": KNOWLEDGE_UPDATE_RULES,
+                    "object_knowledge_catalog": object_signatures,
+                    "procedural_knowledge_catalog": procedural_index,
+                    "update_plan": dict(update_plan),
+                    "editable_source": editable_source,
                 },
                 ensure_ascii=True,
                 indent=2,
             ),
         },
     ]
+
+
+def _conversation_messages(
+    system_parts: Sequence[str],
+    observation: str,
+    trajectory: Sequence[dict[str, str]] | None,
+) -> list[dict[str, str]]:
+    messages = [{"role": "system", "content": "\n\n".join(system_parts)}]
+    for message in _compact_trajectory(trajectory):
+        messages.append(message)
+    if (
+        not messages
+        or messages[-1].get("role") != "user"
+        or messages[-1].get("content") != observation
+    ):
+        messages.append({"role": "user", "content": observation})
+    return messages
+
+
+def _reflection_evidence(
+    steps: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    fields = (
+        "step",
+        "observation",
+        "prediction",
+        "action",
+        "next_observation",
+        "actual",
+        "validity_correct",
+    )
+    return [
+        {field: step[field] for field in fields if field in step}
+        for step in steps
+    ]
+
+
+def _compact_trajectory(
+    trajectory: Sequence[dict[str, str]] | None,
+) -> list[dict[str, str]]:
+    return [
+        {"role": str(message["role"]), "content": str(message["content"])}
+        for message in list(trajectory or [])
+        if isinstance(message, dict)
+        and message.get("role") in {"user", "assistant"}
+        and isinstance(message.get("content"), str)
+    ]
+
+
+def _outcome_contrasts(
+    steps: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    contrasts = []
+    prior_by_family: dict[str, list[Mapping[str, Any]]] = {}
+    for step in steps:
+        action = str(step.get("action") or "").strip()
+        family = action.lower().split(maxsplit=1)[0] if action else ""
+        if not family:
+            continue
+        actual = step.get("actual") if isinstance(step.get("actual"), Mapping) else {}
+        signature = (
+            actual.get("success"),
+            actual.get("invalid_action"),
+            actual.get("reward_delta"),
+        )
+        for earlier in reversed(prior_by_family.get(family, [])):
+            earlier_actual = (
+                earlier.get("actual")
+                if isinstance(earlier.get("actual"), Mapping)
+                else {}
+            )
+            earlier_signature = (
+                earlier_actual.get("success"),
+                earlier_actual.get("invalid_action"),
+                earlier_actual.get("reward_delta"),
+            )
+            if earlier_signature == signature:
+                continue
+            contrasts.append(
+                {
+                    "action_family": family,
+                    "earlier": {
+                        "step": earlier.get("step"),
+                        "action": earlier.get("action"),
+                        "actual": dict(earlier_actual),
+                    },
+                    "later": {
+                        "step": step.get("step"),
+                        "action": action,
+                        "actual": dict(actual),
+                    },
+                }
+            )
+            break
+        prior_by_family.setdefault(family, []).append(step)
+    return contrasts
