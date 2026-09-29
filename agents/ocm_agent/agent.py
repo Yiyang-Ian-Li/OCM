@@ -360,13 +360,32 @@ class OCMAgent(Agent):
         }
         plan_error: str | None = None
         reflection_prompt: list[dict[str, str]] = []
+        steps = self._task_log.get("steps", [])
+        knowledge_review = {}
+        for step in steps:
+            for reference in dict.fromkeys(step.get("prediction", {}).get("knowledge", [])):
+                knowledge_review.setdefault(reference, []).append(step["step"])
+        source_plan = {"object_knowledge_updates": [], "procedural_knowledge_updates": []}
+        for reference in knowledge_review:
+            if reference in self.knowledge.knowledge_ids():
+                kind, target = reference.split(".", 1)
+                source_plan[f"{kind}_knowledge_updates"].append(
+                    {"target": target}
+                )
+        referenced_source = self.knowledge.patch_source(source_plan)
+        self._write_json(update_dir / "knowledge_review.json", {
+            "knowledge_prediction_steps": knowledge_review,
+            "referenced_source": referenced_source,
+        })
         for attempt in range(1, max(1, self.max_update_attempts) + 1):
             reflection_prompt = reflection_messages(
                 benchmark_name=self._benchmark_name,
                 task_context=str(self._task_log.get("initial_observation") or ""),
                 object_signatures=self.knowledge.object_signatures(),
                 procedural_index=self.knowledge.procedural_index(),
-                steps=self._task_log.get("steps", []),
+                steps=steps,
+                knowledge_prediction_steps=knowledge_review,
+                referenced_source=referenced_source,
                 result_meta=result_meta,
                 previous_error=plan_error,
             )
@@ -405,24 +424,21 @@ class OCMAgent(Agent):
             "procedural." + str(item["target"])
             for item in plan.get("procedural_knowledge_updates", [])
         ]
-        editable_source = self.knowledge.inspect(references)
-        (update_dir / "editable_source.py").write_text(
-            editable_source, encoding="utf-8"
-        )
+        editable_source = self.knowledge.patch_source(plan)
+        self._write_json(update_dir / "editable_source.json", editable_source)
 
         object_updates: list[dict[str, str]] = []
         procedural_updates: list[dict[str, str]] = []
         written = {"object": [], "procedural": []}
         update_error = plan_error
         if plan_error is None and references:
+            update_prompt = knowledge_update_messages(
+                object_signatures=self.knowledge.object_signatures(),
+                procedural_index=self.knowledge.procedural_index(),
+                update_plan=plan,
+                editable_source=editable_source,
+            )
             for attempt in range(1, max(1, self.max_update_attempts) + 1):
-                update_prompt = knowledge_update_messages(
-                    object_signatures=self.knowledge.object_signatures(),
-                    procedural_index=self.knowledge.procedural_index(),
-                    update_plan=plan,
-                    editable_source=editable_source,
-                    previous_error=update_error,
-                )
                 raw = ""
                 try:
                     raw = self._chat(
@@ -456,6 +472,11 @@ class OCMAgent(Agent):
                         raw,
                         {"attempt": attempt, "error": update_error},
                     )
+                    update_prompt.extend([
+                        {"role": "assistant", "content": raw},
+                        {"role": "user", "content": "The preceding patch was rejected: " + update_error
+                         + ". Nothing was applied. Correct that patch using the original source and requested format."},
+                    ])
 
         self._write_json(
             update_dir / "knowledge_updates.json",
@@ -466,7 +487,7 @@ class OCMAgent(Agent):
         )
         meta = {
             "reflection_plan_path": str(update_dir / "reflection_plan.json"),
-            "editable_source_path": str(update_dir / "editable_source.py"),
+            "editable_source_path": str(update_dir / "editable_source.json"),
             "knowledge_updates_path": str(update_dir / "knowledge_updates.json"),
             "written_knowledge": written,
             "reflection_plan_error": plan_error,

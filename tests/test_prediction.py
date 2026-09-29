@@ -59,6 +59,42 @@ class PredictionTest(unittest.TestCase):
 
 
 class KnowledgeStoreTest(unittest.TestCase):
+    def test_patch_keeps_helpers_and_applies_helper_only_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = KnowledgeStore.create(Path(tmp))
+            store.object_knowledge_path.write_text("class Door:\n    pass\n\nLIMIT = 1\n")
+            plan = {"object_knowledge_updates": [{"target": "Door", "operation": "update"}],
+                    "procedural_knowledge_updates": [{"target": "opening", "operation": "create"}]}
+            patch = ("*** Begin Patch\n*** Update File: object_knowledge.py\n@@\n"
+                     "-LIMIT = 1\n+LIMIT = 2\n+def threshold():\n+    return LIMIT\n"
+                     "*** Add File: procedural_knowledge/opening.py\n"
+                     "+from object_knowledge import threshold\n+VALUE = threshold()\n*** End Patch")
+            objects, procedures = store.updates_from_patch(patch, plan)
+            changed = store.commit_knowledge_updates(object_updates=objects, procedural_updates=procedures)
+            self.assertEqual(changed["object"], ["Door"])
+            self.assertIn("LIMIT = 2", store.object_source())
+            self.assertIn("def threshold", store.object_source())
+            removal = ("*** Begin Patch\n*** Update File: object_knowledge.py\n@@\n"
+                       "-LIMIT = 2\n def threshold():\n-    return LIMIT\n+    return 3\n*** End Patch")
+            objects, procedures = store.updates_from_patch(removal, {
+                "object_knowledge_updates": plan["object_knowledge_updates"], "procedural_knowledge_updates": []})
+            store.commit_knowledge_updates(object_updates=objects, procedural_updates=procedures)
+            self.assertNotIn("LIMIT", store.object_source())
+
+    def test_patch_source_includes_module_context_and_reports_syntax_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = KnowledgeStore.create(Path(tmp))
+            source = "import math\n\nLIMIT = math.inf\n\nclass Door:\n    locked = True\n"
+            store.object_knowledge_path.write_text(source)
+            plan = {"object_knowledge_updates": [{"target": "Door", "operation": "update"}],
+                    "procedural_knowledge_updates": []}
+            self.assertEqual(source, store.patch_source(plan)["object_knowledge.py"])
+            patch = ("*** Begin Patch\n*** Update File: object_knowledge.py\n@@\n"
+                     "-    locked = True\n+    locked = (\n*** End Patch")
+            with self.assertRaises(SyntaxError):
+                store.updates_from_patch(patch, plan)
+            self.assertEqual(store.object_source(), source)
+
     def test_model_context_contains_complete_object_and_procedure_code(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = KnowledgeStore.create(Path(tmp))

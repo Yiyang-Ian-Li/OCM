@@ -21,6 +21,62 @@ def make_agent(root: str) -> OCMAgent:
 
 
 class OCMAgentTest(unittest.TestCase):
+    def test_reflection_links_executed_predictions_to_original_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = make_agent(tmp)
+            source = "LIMIT = 2\nclass Door:\n    locked = True\n"
+            agent.knowledge.object_knowledge_path.write_text(source)
+            agent.knowledge.commit_knowledge_updates(object_updates=[], procedural_updates=[
+                {"name": "opening", "code": "def opening():\n    return 'open door'\n"},
+                {"name": "unrelated", "code": "def unrelated():\n    return 'wait'\n"},
+            ])
+            agent.on_episode_start("test", "Open the door")
+            steps = [{"step": i, "prediction": {"outcome": "door opens",
+                "knowledge": ["object.Door", "procedural.opening"]},
+                "draft_prediction": {"knowledge": ["procedural.unrelated"]},
+                "action": "open door", "next_observation": "It is locked.",
+                "actual": {"success": False}} for i in [1, 2]]
+            agent._task_log["steps"] = steps
+            agent._chat = Mock(return_value=json.dumps({
+                "object_knowledge_updates": [], "procedural_knowledge_updates": []}))
+            agent._update_knowledge({"success": False})
+            payload = json.loads(agent._chat.call_args.args[0][1]["content"])
+            self.assertEqual(payload["knowledge_prediction_steps"], {
+                "object.Door": [1, 2], "procedural.opening": [1, 2]})
+            self.assertEqual(set(payload["referenced_source"]), {
+                "object_knowledge.py", "procedural_knowledge/opening.py"})
+            self.assertEqual(payload["referenced_source"]["object_knowledge.py"], source)
+            self.assertEqual(payload["executed_prediction_traces"][0]["actual"], {"success": False})
+            self.assertIn("unrelated", payload["procedural_knowledge_catalog"])
+            self.assertEqual(agent._chat.call_count, 1)
+
+    def test_patch_retry_sees_rejected_patch_and_preserves_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = make_agent(tmp)
+            agent.knowledge.commit_knowledge_updates(
+                object_updates=[{"name": "Door", "code": "class Door:\n    locked = True\n"}],
+                procedural_updates=[],
+            )
+            agent.on_episode_start("test", "Open the door")
+            bad_patch = "*** Begin Patch\n*** Update File: object_knowledge.py\n@@\n-class Missing:\n+class Door:\n*** End Patch"
+            good_patch = "*** Begin Patch\n*** Update File: object_knowledge.py\n@@\n-    locked = True\n+    locked = False\n*** End Patch"
+            agent._chat = Mock(side_effect=[
+                json.dumps({"object_knowledge_updates": [{"target": "Door", "operation": "update",
+                    "lesson": "The door is unlocked", "evidence": "The door opened"}],
+                    "procedural_knowledge_updates": []}),
+                bad_patch, good_patch,
+            ])
+            meta = agent._update_knowledge({"success": True})
+            self.assertIsNone(meta["knowledge_update_error"])
+            self.assertIn("locked = False", agent.knowledge.object_source())
+            retry = agent._chat.call_args_list[2].args[0]
+            self.assertEqual(retry[-2], {"role": "assistant", "content": bad_patch})
+            self.assertIn("Nothing was applied", retry[-1]["content"])
+            reflection = json.loads(agent._chat.call_args_list[0].args[0][1]["content"])
+            self.assertNotIn("existing_knowledge", reflection)
+            self.assertEqual(reflection["knowledge_prediction_steps"], {})
+            self.assertEqual(reflection["referenced_source"], {})
+
     def test_action_is_predicted_before_execution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             agent = make_agent(tmp)

@@ -111,19 +111,27 @@ def reflection_messages(
     procedural_index: str,
     steps: Sequence[Mapping[str, Any]],
     result_meta: Mapping[str, Any],
+    knowledge_prediction_steps: Mapping[str, list[int]] | None = None,
+    referenced_source: Mapping[str, str | None] | None = None,
     previous_error: str | None = None,
 ) -> list[dict[str, str]]:
     return [
         {
             "role": "system",
             "content": (
-                "Reflect on one completed episode to maintain an object-centric Python world model. "
+                "Revise an object-centric Python world model in light of one completed episode. "
                 + KNOWLEDGE_ROLES
                 + " Compare each pre-action prediction with the resulting environment transition. A prediction is a "
                 "hypothesis; observations, reward, success, and invalid-action feedback are evidence. Use their residual "
                 "to add, revise, or leave unchanged compact reusable knowledge. New evidence may update knowledge the "
                 "prediction did not cite, and uncertain or conflicting evidence may warrant no update. Prefer the smallest "
                 "object property, relation, transition, or procedural precondition that explains an observed difference. "
+                "knowledge_prediction_steps links each cited knowledge id to the executed predictions that used it; "
+                "referenced_source contains the corresponding source files, once per file. Review the original claim "
+                "against those predictions and their observed outcomes, and express the lesson as a revision of that "
+                "claim where needed. A failed prediction is evidence against its supporting claim, not evidence for "
+                "an unobserved alternative explanation. New situations may support new knowledge, and the catalog "
+                "remains available for revisions beyond cited knowledge. "
                 "The task context defines what reward and success mean but is not itself environment evidence. Return JSON "
                 "only with keys "
                 "object_knowledge_updates and procedural_knowledge_updates. Each value is a list with at most one "
@@ -145,8 +153,9 @@ def reflection_messages(
                     "result": dict(result_meta),
                     "object_knowledge_catalog": object_signatures,
                     "procedural_knowledge_catalog": procedural_index,
+                    "knowledge_prediction_steps": dict(knowledge_prediction_steps or {}),
+                    "referenced_source": dict(referenced_source or {}),
                     "executed_prediction_traces": _reflection_evidence(steps),
-                    "executed_outcome_contrasts": _outcome_contrasts(steps),
                     "previous_error": previous_error,
                 },
                 ensure_ascii=True,
@@ -161,7 +170,7 @@ def knowledge_update_messages(
     object_signatures: str,
     procedural_index: str,
     update_plan: Mapping[str, Any],
-    editable_source: str,
+    editable_source: Mapping[str, str | None],
     previous_error: str | None = None,
 ) -> list[dict[str, str]]:
     system = (
@@ -169,7 +178,8 @@ def knowledge_update_messages(
         + KNOWLEDGE_ROLES
         + " Return only one apply_patch block, from *** Begin Patch through *** End Patch. Patch exactly the files "
         "named by the plan: object_knowledge.py for object targets and procedural_knowledge/<target>.py for procedural "
-        "targets. Use minimal hunks that preserve unrelated code; never reproduce a complete existing file. For a new "
+        "targets. editable_source maps paths to exact file contents; null means the file does not exist. "
+        "Use minimal hunks that preserve unrelated code; never reproduce a complete existing file. For a new "
         "procedural target, add its file. Keep knowledge compact, general, and readable by a language model. Implement "
         "only the reusable claims in the plan without adding unsupported claims. Object code represents entities, "
         "states, relations, and transitions; procedural code represents action-facing workflows and preconditions and "
@@ -217,17 +227,19 @@ def _reflection_evidence(
 ) -> list[dict[str, Any]]:
     fields = (
         "step",
-        "observation",
         "prediction",
         "action",
         "next_observation",
         "actual",
         "validity_correct",
     )
-    return [
+    traces = [
         {field: step[field] for field in fields if field in step}
         for step in steps
     ]
+    if traces and "observation" in steps[0]:
+        traces[0]["observation"] = steps[0]["observation"]
+    return traces
 
 
 def _compact_trajectory(
@@ -240,52 +252,3 @@ def _compact_trajectory(
         and message.get("role") in {"user", "assistant"}
         and isinstance(message.get("content"), str)
     ]
-
-
-def _outcome_contrasts(
-    steps: Sequence[Mapping[str, Any]],
-) -> list[dict[str, Any]]:
-    contrasts = []
-    prior_by_family: dict[str, list[Mapping[str, Any]]] = {}
-    for step in steps:
-        action = str(step.get("action") or "").strip()
-        family = action.lower().split(maxsplit=1)[0] if action else ""
-        if not family:
-            continue
-        actual = step.get("actual") if isinstance(step.get("actual"), Mapping) else {}
-        signature = (
-            actual.get("success"),
-            actual.get("invalid_action"),
-            actual.get("reward_delta"),
-        )
-        for earlier in reversed(prior_by_family.get(family, [])):
-            earlier_actual = (
-                earlier.get("actual")
-                if isinstance(earlier.get("actual"), Mapping)
-                else {}
-            )
-            earlier_signature = (
-                earlier_actual.get("success"),
-                earlier_actual.get("invalid_action"),
-                earlier_actual.get("reward_delta"),
-            )
-            if earlier_signature == signature:
-                continue
-            contrasts.append(
-                {
-                    "action_family": family,
-                    "earlier": {
-                        "step": earlier.get("step"),
-                        "action": earlier.get("action"),
-                        "actual": dict(earlier_actual),
-                    },
-                    "later": {
-                        "step": step.get("step"),
-                        "action": action,
-                        "actual": dict(actual),
-                    },
-                }
-            )
-            break
-        prior_by_family.setdefault(family, []).append(step)
-    return contrasts

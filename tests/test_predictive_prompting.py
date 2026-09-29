@@ -56,6 +56,7 @@ class PredictivePromptingTest(unittest.TestCase):
             steps=[
                 {
                     "step": 3,
+                    "observation": "a rabbit and a crocodile",
                     "prediction": {"action": "focus rabbit", "outcome": "task completes"},
                     "action": "focus rabbit",
                     "next_observation": "not complete",
@@ -63,6 +64,7 @@ class PredictivePromptingTest(unittest.TestCase):
                 },
                 {
                     "step": 4,
+                    "observation": "not complete",
                     "prediction": {"action": "focus crocodile", "outcome": "task completes"},
                     "action": "focus crocodile",
                     "next_observation": "task complete",
@@ -76,9 +78,20 @@ class PredictivePromptingTest(unittest.TestCase):
         trace = payload["executed_prediction_traces"][0]
         self.assertEqual(trace["prediction"]["outcome"], "task completes")
         self.assertEqual(trace["action"], "focus rabbit")
-        contrast = payload["executed_outcome_contrasts"][0]
-        self.assertEqual(contrast["earlier"]["action"], "focus rabbit")
-        self.assertEqual(contrast["later"]["action"], "focus crocodile")
+        self.assertNotIn("executed_outcome_contrasts", payload)
+        traces = payload["executed_prediction_traces"]
+        self.assertEqual(traces[0]["observation"], "a rabbit and a crocodile")
+        self.assertNotIn("observation", traces[1])
+        self.assertEqual([t["next_observation"] for t in traces], ["not complete", "task complete"])
+        self.assertEqual([t["actual"]["success"] for t in traces], [False, True])
+
+    def test_empty_reflection_trajectory(self) -> None:
+        messages = reflection_messages(
+            benchmark_name="test", task_context="initial state", object_signatures="",
+            procedural_index="", steps=[], result_meta={})
+        payload = json.loads(messages[1]["content"])
+        self.assertEqual(payload["executed_prediction_traces"], [])
+        self.assertEqual(payload["task_context"], "initial state")
 
     def test_update_prompt_implements_only_plan(self) -> None:
         messages = knowledge_update_messages(
