@@ -154,6 +154,7 @@ class OCMAgent(Agent):
 
         def decide(
             foresight: Mapping[str, Any] | None = None,
+            draft_policy: Mapping[str, Any] | None = None,
         ) -> dict[str, Any]:
             policy_prompt = policy_messages(
                 benchmark_instruction=instruction,
@@ -162,6 +163,7 @@ class OCMAgent(Agent):
                 observation=observation,
                 trajectory=trajectory,
                 foresight=foresight,
+                draft=draft_policy,
             )
             policy_raw, policy, policy_attempts = self._call_with_format_retry(
                 policy_prompt,
@@ -211,7 +213,7 @@ class OCMAgent(Agent):
         draft_action = str(draft["policy"]["action"])
         draft_prediction = predict(draft_action)
         foresight = dict(draft_prediction["prediction"])
-        revised = decide(foresight=foresight)
+        revised = decide(foresight=foresight, draft_policy=draft["policy"])
         policy = revised["policy"]
         policy_raw = revised["policy_raw_output"]
         action = str(policy["action"])
@@ -359,17 +361,16 @@ class OCMAgent(Agent):
             "procedural_knowledge_updates": [],
         }
         plan_error: str | None = None
-        reflection_prompt: list[dict[str, str]] = []
+        reflection_prompt = reflection_messages(
+            benchmark_name=self._benchmark_name,
+            task_context=str(self._task_log.get("initial_observation") or ""),
+            object_signatures=self.knowledge.object_signatures(),
+            procedural_index=self.knowledge.procedural_index(),
+            steps=self._task_log.get("steps", []),
+            result_meta=result_meta,
+            knowledge_context=self.knowledge.model_context(),
+        )
         for attempt in range(1, max(1, self.max_update_attempts) + 1):
-            reflection_prompt = reflection_messages(
-                benchmark_name=self._benchmark_name,
-                task_context=str(self._task_log.get("initial_observation") or ""),
-                object_signatures=self.knowledge.object_signatures(),
-                procedural_index=self.knowledge.procedural_index(),
-                steps=self._task_log.get("steps", []),
-                result_meta=result_meta,
-                previous_error=plan_error,
-            )
             try:
                 reflection_raw = self._chat(
                     reflection_prompt, call_type="ocm_reflect"
@@ -396,6 +397,7 @@ class OCMAgent(Agent):
                     reflection_raw,
                     {"attempt": attempt, "error": plan_error},
                 )
+                reflection_prompt.extend(_repair_messages(reflection_raw, plan_error))
         self._write_json(update_dir / "reflection_plan.json", plan)
 
         references = [
@@ -405,24 +407,21 @@ class OCMAgent(Agent):
             "procedural." + str(item["target"])
             for item in plan.get("procedural_knowledge_updates", [])
         ]
-        editable_source = self.knowledge.inspect(references)
-        (update_dir / "editable_source.py").write_text(
-            editable_source, encoding="utf-8"
-        )
+        editable_source = self.knowledge.patch_source(plan)
+        self._write_json(update_dir / "editable_source.json", editable_source)
 
         object_updates: list[dict[str, str]] = []
         procedural_updates: list[dict[str, str]] = []
         written = {"object": [], "procedural": []}
         update_error = plan_error
         if plan_error is None and references:
+            update_prompt = knowledge_update_messages(
+                object_signatures=self.knowledge.object_signatures(),
+                procedural_index=self.knowledge.procedural_index(),
+                update_plan=plan,
+                editable_source=editable_source,
+            )
             for attempt in range(1, max(1, self.max_update_attempts) + 1):
-                update_prompt = knowledge_update_messages(
-                    object_signatures=self.knowledge.object_signatures(),
-                    procedural_index=self.knowledge.procedural_index(),
-                    update_plan=plan,
-                    editable_source=editable_source,
-                    previous_error=update_error,
-                )
                 raw = ""
                 try:
                     raw = self._chat(
@@ -456,6 +455,7 @@ class OCMAgent(Agent):
                         raw,
                         {"attempt": attempt, "error": update_error},
                     )
+                    update_prompt.extend(_repair_messages(raw, update_error))
 
         self._write_json(
             update_dir / "knowledge_updates.json",
@@ -466,7 +466,7 @@ class OCMAgent(Agent):
         )
         meta = {
             "reflection_plan_path": str(update_dir / "reflection_plan.json"),
-            "editable_source_path": str(update_dir / "editable_source.py"),
+            "editable_source_path": str(update_dir / "editable_source.json"),
             "knowledge_updates_path": str(update_dir / "knowledge_updates.json"),
             "written_knowledge": written,
             "reflection_plan_error": plan_error,
@@ -477,6 +477,14 @@ class OCMAgent(Agent):
         }
         self._write_json(update_dir / "meta.json", meta)
         return meta
+
+
+def _repair_messages(raw: str, error: str) -> list[dict[str, str]]:
+    return [
+        {"role": "assistant", "content": raw},
+        {"role": "user", "content": "The preceding output was rejected: " + error
+         + ". Nothing was applied. Correct that output using the original source and requested format."},
+    ]
 
 
 def _max_index(directory: Path, prefix: str, suffix: str) -> int:

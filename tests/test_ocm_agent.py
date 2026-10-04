@@ -21,6 +21,31 @@ def make_agent(root: str) -> OCMAgent:
 
 
 class OCMAgentTest(unittest.TestCase):
+    def test_patch_retry_sees_rejected_patch_and_preserves_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = make_agent(tmp)
+            agent.knowledge.commit_knowledge_updates(
+                object_updates=[{"name": "Door", "code": "class Door:\n    locked = True\n"}],
+                procedural_updates=[],
+            )
+            agent.on_episode_start("test", "Open the door")
+            bad_patch = "*** Begin Patch\n*** Update File: object_knowledge.py\n@@\n-class Missing:\n+class Door:\n*** End Patch"
+            good_patch = "*** Begin Patch\n*** Update File: object_knowledge.py\n@@\n-    locked = True\n+    locked = False\n*** End Patch"
+            agent._chat = Mock(side_effect=[
+                json.dumps({"object_knowledge_updates": [{"target": "Door", "operation": "update",
+                    "lesson": "The door is unlocked", "evidence": "The door opened"}],
+                    "procedural_knowledge_updates": []}),
+                bad_patch, good_patch,
+            ])
+            meta = agent._update_knowledge({"success": True})
+            self.assertIsNone(meta["knowledge_update_error"])
+            self.assertIn("locked = False", agent.knowledge.object_source())
+            retry = agent._chat.call_args_list[2].args[0]
+            self.assertEqual(retry[-2], {"role": "assistant", "content": bad_patch})
+            self.assertIn("Nothing was applied", retry[-1]["content"])
+            reflection = json.loads(agent._chat.call_args_list[0].args[0][1]["content"])
+            self.assertIn("locked = True", reflection["existing_knowledge"])
+
     def test_action_is_predicted_before_execution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             agent = make_agent(tmp)

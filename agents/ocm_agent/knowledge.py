@@ -174,6 +174,21 @@ class KnowledgeStore:
             encoding="utf-8",
         )
 
+    def patch_source(self, plan: Mapping[str, Any]) -> dict[str, str | None]:
+        """Expose the exact files patched, including imports and module-level context."""
+        paths = []
+        if plan.get("object_knowledge_updates"):
+            paths.append(self.object_knowledge_path)
+        paths.extend(
+            self.procedural_dir / f"{_safe_stem(str(item['target']))}.py"
+            for item in plan.get("procedural_knowledge_updates", [])
+        )
+        return {
+            str(path.relative_to(self.root)):
+            path.read_text(encoding="utf-8") if path.exists() else None
+            for path in paths
+        }
+
     def preview_object_updates(self, updates: Sequence[Mapping[str, str]]) -> str:
         source = self.object_source()
         for item in updates:
@@ -189,7 +204,7 @@ class KnowledgeStore:
                 raise ValueError(f"object update does not define {name}")
             if existing_name and existing_name != name:
                 source = remove_top_level_definitions(source, [existing_name])
-            source = merge_top_level_definitions(source, code)
+            source = code if item.get("source_kind") == "module" else merge_top_level_definitions(source, code)
         compile(source or "\n", "object_knowledge.py", "exec")
         return dedupe_top_level_imports(source)
 
@@ -206,8 +221,11 @@ class KnowledgeStore:
                 str(item.get("existing_name") or item.get("name") or "")
             )
             new_name = _safe_identifier(str(item.get("name") or ""))
-            before = extract_definitions(self.object_source(), [old_name])
-            after = extract_definitions(candidate, [new_name])
+            if item.get("source_kind") == "module":
+                before, after = self.object_source(), candidate
+            else:
+                before = extract_definitions(self.object_source(), [old_name])
+                after = extract_definitions(candidate, [new_name])
             if old_name != new_name or _fingerprint(before) != _fingerprint(after):
                 changed_objects.append(new_name)
         changed_procedural = []
@@ -299,18 +317,21 @@ class KnowledgeStore:
             raise ValueError(f"knowledge patch cannot delete {path}")
 
         process_patch(patch_text, open_source, write_source, remove_source)
+        for path in touched_paths:
+            compile(sources[path] or "\n", path, "exec")
 
         object_updates = []
         for item in object_plan:
             target = _safe_identifier(str(item["target"]))
-            code = extract_definitions(sources["object_knowledge.py"], [target])
-            if not code.strip():
+            code = sources["object_knowledge.py"]
+            if target not in top_level_definition_names(code):
                 raise ValueError(f"knowledge patch does not define object target {target}")
             object_updates.append(
                 {
                     "existing_name": "" if item.get("operation") == "create" else target,
                     "name": target,
                     "code": code,
+                    "source_kind": "module",
                 }
             )
 

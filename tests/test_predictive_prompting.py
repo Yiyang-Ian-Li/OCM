@@ -13,7 +13,7 @@ class PredictivePromptingTest(unittest.TestCase):
     def setUp(self) -> None:
         self.trajectory = [
             {"role": "user", "content": "initial state"},
-            {"role": "assistant", "content": "Thought: inspect\nAction: look around"},
+            {"role": "assistant", "content": "Thought: inspect\nPrediction: a door will open\nAction: look around"},
             {"role": "user", "content": "a rabbit and a crocodile"},
         ]
 
@@ -43,7 +43,7 @@ class PredictivePromptingTest(unittest.TestCase):
         self.assertIn("('crocodile', 'rabbit')", system)
         self.assertIn("prediction is a hypothesis", system)
         self.assertEqual(
-            json.loads(messages[-1]["content"].split("\n", 1)[1]),
+            json.loads(messages[-1]["content"].rsplit("\n", 1)[1]),
             {"action": "focus on crocodile"},
         )
 
@@ -76,16 +76,54 @@ class PredictivePromptingTest(unittest.TestCase):
         trace = payload["executed_prediction_traces"][0]
         self.assertEqual(trace["prediction"]["outcome"], "task completes")
         self.assertEqual(trace["action"], "focus rabbit")
-        contrast = payload["executed_outcome_contrasts"][0]
-        self.assertEqual(contrast["earlier"]["action"], "focus rabbit")
-        self.assertEqual(contrast["later"]["action"], "focus crocodile")
+        self.assertNotIn("executed_outcome_contrasts", payload)
+        self.assertEqual(payload["executed_prediction_traces"][1]["next_observation"], "task complete")
+
+    def test_predictor_receives_observed_history_without_policy_beliefs(self) -> None:
+        context = dict(
+            benchmark_instruction="Use primitive actions.",
+            benchmark_examples="An example.",
+            knowledge_context="class Door: pass",
+            observation="A closed door.",
+            trajectory=self.trajectory,
+        )
+        draft = {"thought": "Open the route.", "action": "open door"}
+        policy = policy_messages(**context)
+        prediction = prediction_messages(
+            **{k: v for k, v in context.items() if k != "benchmark_examples"}, action=draft["action"]
+        )
+        revision = policy_messages(**context, draft=draft, foresight={"outcome": "The door is locked."})
+        self.assertEqual(policy, revision[:-1])
+        self.assertNotIn("Thought: inspect", str(prediction))
+        self.assertNotIn("Prediction: a door will open", str(prediction))
+        self.assertIn("Prediction: a door will open", str(policy))
+        self.assertEqual(prediction[2], {"role": "assistant", "content": "Action: look around"})
+        self.assertEqual(prediction[1], policy[1])
+        self.assertEqual(prediction[3], policy[3])
+        self.assertIn(draft["thought"], revision[-1]["content"])
+
+    def test_reflection_sees_existing_claim_and_each_observation_once(self) -> None:
+        messages = reflection_messages(
+            benchmark_name="test", task_context="goal", object_signatures="", procedural_index="",
+            knowledge_context="class Door: opens_without_key = True",
+            result_meta={},
+            steps=[
+                {"observation": "initial", "action": "open door", "next_observation": "locked"},
+                {"observation": "locked", "action": "use key", "next_observation": "open"},
+            ],
+        )
+        payload = json.loads(messages[1]["content"])
+        self.assertIn("opens_without_key", payload["existing_knowledge"])
+        self.assertEqual(payload["executed_prediction_traces"][0]["observation"], "initial")
+        self.assertNotIn("observation", payload["executed_prediction_traces"][1])
+        self.assertEqual(messages[1]["content"].count('"locked"'), 1)
 
     def test_update_prompt_implements_only_plan(self) -> None:
         messages = knowledge_update_messages(
             object_signatures="# empty",
             procedural_index="PROCEDURAL_KNOWLEDGE = {}",
             update_plan={"object_knowledge_updates": [], "procedural_knowledge_updates": []},
-            editable_source="",
+            editable_source={},
         )
         self.assertIn("Implement exactly", messages[0]["content"])
 

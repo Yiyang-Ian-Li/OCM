@@ -1,0 +1,207 @@
+<div id="__ROOT__" class="object-network">
+  <h3>__TITLE__ · Task–object graph</h3>
+  <div class="network-stats text-small" aria-live="polite"></div>
+  <div class="viz-controls">
+    <label class="form-label">查看任务 / 对象
+      <select class="form-select network-selection" aria-label="查看任务或对象"></select>
+    </label>
+    <label class="form-label">关联依据
+      <select class="form-select network-scope" aria-label="关联依据">
+        <option value="default">__DEFAULT_LABEL__</option>
+        <option value="all">全部来源（含候选 / 环境设置）</option>
+      </select>
+    </label>
+  </div>
+  <div class="network-caption text-small" aria-live="polite"></div>
+  <div class="network-plot"></div>
+  <div class="network-legend text-small"><span class="task-key">●</span> 任务　<span class="object-key">■</span> 对象　<span class="network-impossible"><span class="impossible-key">◆</span> 不可解任务</span>　虚线：替代项 / 候选 / 仅任务提及</div>
+  <div class="network-detail"></div>
+  <script type="application/json" class="network-data">__DATA__</script>
+</div>
+<style>
+  #__ROOT__ { color:var(--foreground); }
+  #__ROOT__ .network-stats, #__ROOT__ .network-caption, #__ROOT__ .network-legend { margin-block:8px; }
+  #__ROOT__ .network-plot { width:100%; }
+  #__ROOT__ .network-svg { display:block; width:100%; }
+  #__ROOT__ .network-svg text { fill:var(--foreground); font-size:12px; font-weight:400; }
+  #__ROOT__ .network-svg .edge { stroke:var(--border); stroke-width:1; fill:none; }
+  #__ROOT__ .network-svg .task-mark { fill:var(--viz-series-1); }
+  #__ROOT__ .network-svg .object-mark { fill:var(--viz-series-2); }
+  #__ROOT__ .network-svg .impossible-mark { fill:var(--viz-series-3); }
+  #__ROOT__ .network-detail { overflow-wrap:anywhere; }
+  #__ROOT__ .network-detail details { margin-block:10px; }
+  #__ROOT__ .network-detail summary { font-weight:500; }
+  #__ROOT__ .network-detail ul { padding-inline-start:20px; }
+  #__ROOT__ .network-detail .evidence-source { color:var(--muted-foreground); }
+  #__ROOT__ .network-detail button { overflow-wrap:anywhere; white-space:normal; }
+  #__ROOT__ .task-key { color:var(--viz-series-1); }
+  #__ROOT__ .object-key { color:var(--viz-series-2); }
+  #__ROOT__ .impossible-key { color:var(--viz-series-3); }
+</style>
+<script>
+(() => {
+  const root = document.getElementById('__ROOT__');
+  const graph = JSON.parse(root.querySelector('.network-data').textContent);
+  const pick = root.querySelector('.network-selection');
+  const scope = root.querySelector('.network-scope');
+  const plot = root.querySelector('.network-plot');
+  const detail = root.querySelector('.network-detail');
+  const caption = root.querySelector('.network-caption');
+  const tasks = new Map(graph.tasks.map(t => [t.id, t]));
+  const objects = new Map(graph.objects.map(o => [o.id, o]));
+  const roleNames = {score_required:'评分明确提及',score_alternative:'评分替代表述',task_mentioned:'任务文本提及',native_goal:'原生目标',setup:'环境设置（可能为干扰物）',input:'初始原料',intermediate:'中间产物',target:'目标',dependency_available:'候选依赖 · 库存中有',dependency_absent:'候选依赖 · 库存中无'};
+  const isSci = graph.benchmark === 'ScienceWorld';
+  let selection = '', marks = [];
+  const svgNS = 'http://www.w3.org/2000/svg';
+  function svgEl(tag, attrs = {}, text) {
+    const el = document.createElementNS(svgNS, tag);
+    Object.entries(attrs).forEach(([k,v]) => el.setAttribute(k,v));
+    if (text !== undefined) el.textContent = text;
+    return el;
+  }
+  function textEl(tag, text, cls) {
+    const el = document.createElement(tag); el.textContent = text;
+    if (cls) el.className = cls;
+    return el;
+  }
+  function visibleLinks() {
+    return graph.links.filter(e => scope.value === 'all' || e.roles.some(r => graph.default_roles.includes(r)));
+  }
+  function label(id) {
+    if (id.startsWith('t:')) return tasks.get(id.slice(2)).label;
+    return objects.get(id.slice(2)).label;
+  }
+  function roleText(e) { return e.roles.map(r => roleNames[r] || r).join(' · '); }
+  function dashed(e) {
+    return !e.roles.some(r => ['score_required','input','intermediate','target'].includes(r));
+  }
+  function save() {
+    if (window.openai && window.openai.setWidgetState) {
+      window.openai.setWidgetState({modelContent:{benchmark:graph.benchmark,selected:selection,scope:scope.value},privateContent:null}).catch(() => {});
+    }
+  }
+  function options() {
+    pick.replaceChildren(new Option('全图 · 点击节点可展开', ''));
+    const tg = document.createElement('optgroup'); tg.label = '任务';
+    graph.tasks.forEach(t => tg.append(new Option(t.label + (t.impossible ? ' · 不可解' : ''), 't:' + t.id)));
+    const og = document.createElement('optgroup'); og.label = '对象';
+    const active = new Set(visibleLinks().map(e=>e.object));
+    graph.objects.filter(o=>active.has(o.id)).forEach(o=>og.append(new Option(o.label,'o:'+o.id)));
+    pick.append(tg, og);
+    if (![...pick.options].some(o=>o.value===selection)) selection='';
+    pick.value=selection;
+  }
+  function select(id) { selection=id; options(); render(); save(); }
+  function button(id, text) {
+    const b=textEl('button',text,'btn btn-ghost'); b.type='button';
+    b.addEventListener('click',()=>select(id)); return b;
+  }
+  function node(svg,id,x,y,r=4) {
+    const task=id.startsWith('t:'); const impossible=task && tasks.get(id.slice(2)).impossible;
+    let el;
+    if(impossible) el=svgEl('path',{d:`M ${x} ${y-r-1} L ${x+r+1} ${y} L ${x} ${y+r+1} L ${x-r-1} ${y} Z`,class:'impossible-mark'});
+    else if(task) el=svgEl('circle',{cx:x,cy:y,r,class:'task-mark'});
+    else el=svgEl('rect',{x:x-r,y:y-r,width:r*2,height:r*2,class:'object-mark'});
+    el.append(svgEl('title',{},label(id)));svg.append(el);marks.push({id,x,y});
+  }
+  function overview(svg,w,h,links) {
+    const active=new Set([...graph.tasks.map(t=>'t:'+t.id),...links.map(e=>'o:'+e.object)]);
+    const coords=new Map();
+    const layout=scope.value==='all'?graph.layout_all:graph.layout;
+    active.forEach(id=>{
+      const p=layout[id];
+      coords.set(id,[30+(p[0]+1)*(w-60)/2,24+(p[1]+1)*(h-48)/2]);
+    });
+    links.forEach(e=>{const a=coords.get('t:'+e.task),b=coords.get('o:'+e.object);
+      svg.append(svgEl('line',{x1:a[0],y1:a[1],x2:b[0],y2:b[1],class:'edge','stroke-dasharray':dashed(e)?'3 3':''}));
+    });
+    active.forEach(id=>node(svg,id,...coords.get(id),id.startsWith('t:')?3.5:4));
+    const degree={};links.forEach(e=>degree[e.object]=(degree[e.object]||0)+1);
+    const used=[];
+    Object.entries(degree).sort((a,b)=>b[1]-a[1]).slice(0,w<480?4:8).forEach(([id,n])=>{
+      const [x,y]=coords.get('o:'+id); const left=x>w/2;
+      const txt=svgEl('text',{x:x+(left?-8:8),y:y-8,'text-anchor':left?'end':'start'},objects.get(id).label+` (${n})`);
+      svg.append(txt);const box=txt.getBBox();
+      if(box.x<2||box.x+box.width>w-2||used.some(b=>box.x<b.x+b.width+4&&box.x+box.width+4>b.x&&box.y<b.y+b.height+4&&box.y+box.height+4>b.y)) txt.remove();
+      else used.push(box);
+    });
+  }
+  function neighborhood(svg,w,h,links) {
+    const task=selection.startsWith('t:');
+    const list=links.filter(e=>task ? e.task===selection.slice(2) : e.object===selection.slice(2));
+    const x=32, xr=Math.max(140,w*0.34), start=32, gap=34;
+    const cy=list.length ? start+(list.length-1)*gap/2 : 32;
+    list.forEach((e,i)=>{
+      const y=start+i*gap, id=task?'o:'+e.object:'t:'+e.task;
+      svg.append(svgEl('path',{d:`M ${x} ${cy} C ${(x+xr)/2} ${cy}, ${(x+xr)/2} ${y}, ${xr} ${y}`,class:'edge','stroke-dasharray':dashed(e)?'4 3':''}));
+      node(svg,id,xr,y,5);
+      const name=task?objects.get(e.object).label:(tasks.get(e.task).impossible?'◆ ':'')+e.task+(w>550?' · '+tasks.get(e.task).family:'');
+      const text=svgEl('text',{x:xr+12,y:y+4},name);svg.append(text);
+      const maxWidth=w-xr-18;
+      while(text.getComputedTextLength()>maxWidth && text.textContent.length>5) text.textContent=text.textContent.slice(0,-2).replace(/…$/,'')+'…';
+    });
+    node(svg,selection,x,cy,7);
+  }
+  function renderDetail(links) {
+    detail.replaceChildren();
+    if(!selection){
+      const audit=graph.audit?.filter(a=>a.reason!=='location-only')||[];
+      if(audit.length){const d=document.createElement('details');d.append(textEl('summary',`${audit.length} 个需核对的评分片段`));audit.forEach(a=>d.append(textEl('p',`${a.task}: ${a.pattern} · ${a.reason}`,'text-small')));detail.append(d);}
+      return;
+    }
+    const task=selection.startsWith('t:');
+    const chosen=links.filter(e=>task?e.task===selection.slice(2):e.object===selection.slice(2));
+    if(task){
+      const t=tasks.get(selection.slice(2));
+      const d=document.createElement('details');d.append(textEl('summary','任务原文'));d.append(textEl('p',t.goal,'text-small'));detail.append(d);
+      if(t.impossible) detail.append(textEl('p','不可解：连边为配方候选依赖，不是成功路径；库存有该类型也可能数量不足。','text-small'));
+      if(t.steps?.length){
+        const path=document.createElement('details');path.open=true;path.append(textEl('summary',`参考配方链 · ${t.steps.length} 步`));
+        t.steps.forEach(s=>{const fmt=x=>Object.entries(x).map(([k,v])=>`${v} ${k.replaceAll('_',' ')}`).join(' + ');path.append(textEl('p',`${s.step}. ${fmt(s.consumed)} → ${fmt(s.produced)}`,'text-small'));});detail.append(path);
+      }
+    }
+    const table=document.createElement('table');table.className='table table-sm';
+    const head=document.createElement('thead'),tr=document.createElement('tr');
+    [task?'对象':'任务','关联依据'].forEach(x=>tr.append(textEl('th',x)));head.append(tr);table.append(head);
+    const body=document.createElement('tbody');
+    chosen.forEach(e=>{
+      const row=document.createElement('tr'),a=document.createElement('td'),b=document.createElement('td');
+      a.append(button(task?'o:'+e.object:'t:'+e.task,task?objects.get(e.object).label:e.task));
+      b.append(textEl('span',roleText(e),'text-small'));
+      const proof=document.createElement('details');proof.append(textEl('summary','查看来源','text-small'));
+      const seen=new Set();e.evidence.forEach(ev=>{const key=ev.source+'|'+ev.text;if(seen.has(key))return;seen.add(key);
+        proof.append(textEl('p',ev.text,'text-small'));proof.append(textEl('span',ev.source+(ev.matched_name&&ev.matched_name!==e.object?` · ${ev.matched_name} → ${e.object}`:''),'text-small evidence-source'));
+      });b.append(proof);row.append(a,b);body.append(row);
+    });table.append(body);detail.append(table);
+  }
+  function render() {
+    const links=visibleLinks(), w=Math.max(280,plot.clientWidth);
+    const selected=selection?links.filter(e=>selection.startsWith('t:')?e.task===selection.slice(2):e.object===selection.slice(2)):[];
+    const h=selection?Math.max(125,selected.length*34+40):400;
+    plot.replaceChildren();marks=[];
+    const svg=svgEl('svg',{viewBox:`0 0 ${w} ${h}`,height:h,class:'network-svg',role:'img','aria-label':`${graph.benchmark} task-object graph`});
+    svg.append(svgEl('title',{},`${graph.tasks.length} tasks and ${new Set(links.map(e=>e.object)).size} objects`));
+    plot.append(svg);
+    if(selection)neighborhood(svg,w,h,links);else overview(svg,w,h,links);
+    svg.addEventListener('click',ev=>{
+      const rect=svg.getBoundingClientRect(),x=(ev.clientX-rect.left)*w/rect.width,y=(ev.clientY-rect.top)*h/rect.height;
+      let near=null,dist=25;marks.forEach(m=>{const d=Math.hypot(m.x-x,m.y-y);if(d<dist){near=m;dist=d;}});if(near)select(near.id);
+    });
+    root.querySelector('.network-stats').textContent=`${graph.tasks.length} 个任务 · ${new Set(links.map(e=>e.object)).size} 种对象 · ${links.length} 条边`;
+    root.querySelector('.network-impossible').hidden=isSci;
+    caption.textContent=selection?`${label(selection)} · ${selected.length} 个关联`:(isSci?'对象按运行时生命周期合并别名；连边不代表物理必要性。':'97 个可解任务：参考解对象；20 个不可解任务：目标与库存中的候选依赖。');
+    renderDetail(links);
+  }
+  function restore(state){
+    const s=state?.modelContent;
+    if(s?.benchmark===graph.benchmark){selection=s.selected||'';scope.value=s.scope==='all'?'all':'default';}
+    options();render();
+  }
+  pick.addEventListener('change',()=>select(pick.value));
+  scope.addEventListener('change',()=>{options();render();save();});
+  restore(window.openai?.widgetState);
+  window.addEventListener('openai:set_globals',e=>{if(e.detail?.globals?.widgetState)restore(e.detail.globals.widgetState);});
+  let lastWidth=plot.clientWidth;
+  new ResizeObserver(()=>{if(Math.abs(lastWidth-plot.clientWidth)>1){lastWidth=plot.clientWidth;render();}}).observe(plot);
+})();
+</script>

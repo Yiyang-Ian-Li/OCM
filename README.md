@@ -38,8 +38,19 @@ After execution, the prediction is paired with the real observation, reward,
 success, and validity signals. This residual is visible to the next policy step
 and, at episode end, updates the same object and procedural code used for future
 predictions. This gives one closed loop: act from OCM, predict, observe, and
-revise OCM. The logs expose prediction coverage, memory references, and validity
-calibration so the mechanism can be audited separately from benchmark reward.
+revise OCM. Reflection receives the existing knowledge implementation alongside
+the executed transitions, so it can revise an incorrect claim rather than only
+append new lessons. Patch retries include the rejected output and error against
+the unchanged source.
+
+The predictor receives the complete executed action/observation history, without
+the policy's historical thoughts or predictions. The policy retains its full
+history and compares its proposed action and reasoning with the predicted outcome.
+This keeps an intended result from serving as evidence for the world model.
+The shorter predictor history reduces repeated context processing. Every action
+is still reviewed without a validity or effect gate.
+The logs retain proposed and executed actions, predicted outcomes, knowledge
+references, and observed transitions for mechanism analysis.
 
 The runner currently supports:
 
