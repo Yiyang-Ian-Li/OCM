@@ -287,11 +287,11 @@ class KnowledgeStore:
         touched_paths = set(identify_files_needed(patch_text)) | set(
             identify_files_added(patch_text)
         )
-        if touched_paths != allowed_paths:
-            raise ValueError(
-                "knowledge patch must touch exactly the planned files: "
-                + ", ".join(sorted(allowed_paths))
-            )
+        errors = []
+        if allowed_paths - touched_paths:
+            errors.append("Missing planned files: " + ", ".join(sorted(allowed_paths - touched_paths)))
+        if touched_paths - allowed_paths:
+            errors.append("Unexpected files (remove these edits): " + ", ".join(sorted(touched_paths - allowed_paths)))
 
         sources: dict[str, str] = {}
         if object_plan:
@@ -316,16 +316,25 @@ class KnowledgeStore:
         def remove_source(path: str) -> None:
             raise ValueError(f"knowledge patch cannot delete {path}")
 
-        process_patch(patch_text, open_source, write_source, remove_source)
-        for path in touched_paths:
-            compile(sources[path] or "\n", path, "exec")
+        try:
+            process_patch(patch_text, open_source, write_source, remove_source)
+        except ValueError as exc:
+            errors.append(str(exc))
+            raise ValueError("Patch rejected; nothing applied:\n- " + "\n- ".join(errors)) from exc
+        compiled_paths = set()
+        for path in sorted(touched_paths & allowed_paths):
+            try:
+                compile(sources[path] or "\n", path, "exec")
+                compiled_paths.add(path)
+            except SyntaxError as exc:
+                errors.append(f"{path}:{exc.lineno}: {exc.msg}; source: {str(exc.text or '').strip()}")
 
         object_updates = []
         for item in object_plan:
             target = _safe_identifier(str(item["target"]))
             code = sources["object_knowledge.py"]
-            if target not in top_level_definition_names(code):
-                raise ValueError(f"knowledge patch does not define object target {target}")
+            if "object_knowledge.py" in compiled_paths and target not in top_level_definition_names(code):
+                errors.append(f"object_knowledge.py: missing top-level definition {target!r} required by the plan. Define it with that exact name; helpers alone do not implement the target.")
             object_updates.append(
                 {
                     "existing_name": "" if item.get("operation") == "create" else target,
@@ -339,8 +348,8 @@ class KnowledgeStore:
         for item in procedural_plan:
             target = _safe_stem(str(item["target"]))
             code = sources[f"procedural_knowledge/{target}.py"]
-            if not code.strip():
-                raise ValueError(f"knowledge patch leaves procedural target {target} empty")
+            if not code.strip() and f"procedural_knowledge/{target}.py" in touched_paths:
+                errors.append(f"procedural_knowledge/{target}.py: planned procedure cannot be empty")
             procedural_updates.append(
                 {
                     "existing_name": "" if item.get("operation") == "create" else target,
@@ -348,6 +357,8 @@ class KnowledgeStore:
                     "code": code,
                 }
             )
+        if errors:
+            raise ValueError("Patch rejected; nothing applied:\n- " + "\n- ".join(errors))
         return object_updates, procedural_updates
 
     def _check_candidate(
@@ -548,7 +559,9 @@ def _extract_patch(raw: str) -> str:
     end = text.rfind("*** End Patch")
     if start < 0 or end < start:
         raise ValueError("knowledge update must contain an apply_patch block")
-    return text[start : end + len("*** End Patch")]
+    patch = text[start : end + len("*** End Patch")].replace("\r\n", "\n")
+    # An empty hunk marker immediately after an Add header carries no content.
+    return re.sub(r"(?m)^(\*\*\* Add File: [^\n]+\n)@@\n(?=\+)", r"\1", patch)
 
 
 def _fingerprint(source: str) -> str:

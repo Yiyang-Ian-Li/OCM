@@ -34,6 +34,7 @@ DEFAULT_CONFIG = {
 
     # Agent backend selection.
     "agent": "ocm",  # Agent backend.
+    "react_implementation": "local",
 
     # Base agent model settings.
     "provider": "openai",  # LLM provider used for OpenAI-compatible requests.
@@ -127,6 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Agent backend selection.
     parser.add_argument("--agent", choices=["react", "ocm", "worldevolver"], default=None)  # Override agent backend.
+    parser.add_argument("--react-implementation", choices=["local", "worldevolver"], default=None)
 
     # Base agent model settings.
     parser.add_argument("--provider", choices=sorted(PROVIDER_BASE_URLS), default=None)  # Override provider.

@@ -162,7 +162,13 @@ class Parser:
                     raise DiffError(f"Duplicate add for file: {path}")
                 if path in self.current_files:
                     raise DiffError(f"Add File Error - file already exists: {path}")
-                self.patch.actions[path] = self._parse_add_file()
+                try:
+                    self.patch.actions[path] = self._parse_add_file()
+                except DiffError as exc:
+                    raise DiffError(
+                        f"{path}: patch line {self.index}: {exc}. "
+                        "Add File has no @@ hunk header; prefix every content line, including blank lines, with '+'."
+                    ) from exc
                 continue
 
             raise DiffError(f"Unknown line while parsing: {self._cur_line()}")

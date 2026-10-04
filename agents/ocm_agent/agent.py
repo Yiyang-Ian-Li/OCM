@@ -20,6 +20,7 @@ from .knowledge import (
     validate_reflection_plan,
 )
 from .prediction import (
+    PREDICTION_RESPONSE_FORMAT,
     evaluate_observed_transition,
     parse_action_prediction,
 )
@@ -83,6 +84,7 @@ class OCMAgent(Agent):
             seed=self.seed,
             stop=self.stop_sequences or None,
             max_tokens=MAX_COMPLETION_TOKENS.get(call_type),
+            response_format=PREDICTION_RESPONSE_FORMAT if call_type == "ocm_predict" else None,
             call_type=call_type,
         )
         return response.content or ""
@@ -224,8 +226,6 @@ class OCMAgent(Agent):
         self.last_raw_output = (
             "Thought: "
             + str(policy["thought"]).strip()
-            + "\nPrediction: "
-            + str(prediction["outcome"]).strip()
             + "\nAction: "
             + action
         )
@@ -251,7 +251,10 @@ class OCMAgent(Agent):
                 "parsed_action": action,
                 "action_changed_by_foresight": not _same_action(action, draft_action),
                 "knowledge_available": bool(available_knowledge),
-                "knowledge_references": list(prediction.get("knowledge") or []),
+                "knowledge_references": list(dict.fromkeys(
+                    reference for component in ("transition", "progress")
+                    for reference in prediction[component]["knowledge"]
+                )),
                 "knowledge_context_chars": len(model_context),
                 "token_usage": step_usage,
             }
@@ -291,6 +294,12 @@ class OCMAgent(Agent):
                         },
                     ]
                 )
+        self._log_prompt(
+            call_type,
+            messages,
+            raw,
+            {"value": None, "attempts": attempts, "error": error},
+        )
         raise RuntimeError(
             f"{call_type} did not return valid output after three attempts: {error}"
         )
@@ -307,10 +316,8 @@ class OCMAgent(Agent):
         if not self._decision_log:
             return
         decision = self._decision_log[-1]
-        prediction = decision["prediction"]
         reward = getattr(outcome, "reward", None)
         evaluation = evaluate_observed_transition(
-            prediction,
             reward=reward,
             previous_reward=self._previous_reward,
             done=bool(getattr(outcome, "done", False)),
@@ -363,8 +370,11 @@ class OCMAgent(Agent):
         steps = self._task_log.get("steps", [])
         knowledge_review = {}
         for step in steps:
-            for reference in dict.fromkeys(step.get("prediction", {}).get("knowledge", [])):
-                knowledge_review.setdefault(reference, []).append(step["step"])
+            for component in ("transition", "progress"):
+                for reference in step["prediction"][component]["knowledge"]:
+                    knowledge_review.setdefault(reference, []).append({
+                        "step": step["step"], "component": component,
+                    })
         source_plan = {"object_knowledge_updates": [], "procedural_knowledge_updates": []}
         for reference in knowledge_review:
             if reference in self.knowledge.knowledge_ids():

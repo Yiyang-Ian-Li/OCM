@@ -16,49 +16,85 @@ from agents.ocm_agent.prediction import (
 
 
 class PredictionTest(unittest.TestCase):
-    def test_prediction_is_bound_to_executed_action_and_known_evidence(self) -> None:
-        prediction = parse_action_prediction(
-            '{"outcome":"task completes","valid":true,"effect":"complete",'
-            '"knowledge":["object.Animal","invented.Rule"]}',
-            "focus on crocodile",
-            available_knowledge=["object.Animal"],
-        )
-        self.assertEqual(prediction["action"], "focus on crocodile")
-        self.assertEqual(prediction["knowledge"], ["object.Animal"])
-        self.assertEqual(prediction["effect"], "complete")
+    def test_components_keep_separate_references(self) -> None:
+        import json
+        raw = json.dumps({
+            "transition": {"prediction": "door opens", "knowledge": ["procedural.opening", "unknown"]},
+            "progress": {"prediction": "route becomes accessible", "knowledge": ["object.Door", "object.Door"]},
+        })
+        result = parse_action_prediction(raw, "open door", available_knowledge=["procedural.opening", "object.Door"])
+        self.assertEqual(result["transition"]["knowledge"], ["procedural.opening"])
+        self.assertEqual(result["progress"]["knowledge"], ["object.Door"])
+        self.assertEqual(set(result), {"action", "transition", "progress"})
 
-    def test_simple_format_fallback_handles_wrappers_and_missing_delimiters(self) -> None:
-        parsed = parse_action_prediction(
-            '{"outcome":"door opens","valid":true,"effect":"advance","knowledge":[]',
-            "open door",
-        )
-        self.assertEqual(parsed["outcome"], "door opens")
-        wrapped = parse_action_prediction(
-            '<tool_call>\n</think>\n'
-            '{"outcome":"door opens","valid":true,"effect":"advance","knowledge":[]}',
-            "open door",
-        )
-        self.assertEqual(wrapped["outcome"], "door opens")
+    def test_simple_format_fallback_and_missing_component(self) -> None:
+        raw = '{"transition":{"prediction":"door opens","knowledge":[]},"progress":{"prediction":"uncertain","knowledge":[]}}'
+        for value in [raw[:-1], "<tool_call>\\n</think>\\n" + raw]:
+            self.assertEqual(parse_action_prediction(value, "open door")["progress"]["prediction"], "uncertain")
         with self.assertRaises(ValueError):
-            parse_action_prediction(
-                '{"outcome":"unterminated,"valid":true,"effect":"advance"}',
-                "open door",
-            )
+            parse_action_prediction('{"transition":{"prediction":"door opens"}}', "open door")
 
-    def test_observation_checks_only_observable_fields(self) -> None:
-        result = evaluate_observed_transition(
-            {"valid": False, "success": None},
-            reward=0.5,
-            previous_reward=0.0,
-            done=False,
-            success=False,
-            invalid_action=True,
-        )
-        self.assertTrue(result["validity_correct"])
-        self.assertEqual(result["actual"]["reward_delta"], 0.5)
+    def test_missing_prediction_content_is_not_invented(self) -> None:
+        for raw in ('{"transition":{"prediction":"door opens"}}',
+                    '{"transition":{"prediction":""},"progress":{"prediction":"route available"}}',
+                    '{"name":"predict_transition","arguments":{"prediction":"door opens"}}'):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                parse_action_prediction(raw, "open door")
+
+    def test_observation_does_not_label_progress_from_reward(self) -> None:
+        result = evaluate_observed_transition(reward=0.0, previous_reward=0.0,
+            done=False, success=False, invalid_action=False)
+        self.assertEqual(result["actual"]["reward_delta"], 0.0)
+        self.assertEqual(set(result), {"actual"})
 
 
 class KnowledgeStoreTest(unittest.TestCase):
+    def test_reports_missing_file_and_definition_together_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = KnowledgeStore.create(Path(tmp))
+            plan = {"object_knowledge_updates": [{"target": "Animal", "operation": "create"}],
+                    "procedural_knowledge_updates": [{"target": "finding", "operation": "create"}]}
+            patch = "*** Begin Patch\n*** Update File: object_knowledge.py\n@@\n+HELPER = 1\n*** End Patch"
+            with self.assertRaises(ValueError) as caught:
+                store.updates_from_patch(patch, plan)
+            self.assertIn("Missing planned files: procedural_knowledge/finding.py", str(caught.exception))
+            self.assertIn("missing top-level definition 'Animal'", str(caught.exception))
+            self.assertEqual(store.object_source(), "")
+            self.assertFalse((store.procedural_dir / "finding.py").exists())
+
+    def test_add_header_normalization_preserves_literal_content(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = KnowledgeStore.create(Path(tmp))
+            plan = {"object_knowledge_updates": [],
+                    "procedural_knowledge_updates": [{"target": "finding", "operation": "create"}]}
+            patch = '*** Begin Patch\n*** Add File: procedural_knowledge/finding.py\n@@\n+TEXT = """\n+@@\n+"""\n*** End Patch'
+            objects, procedures = store.updates_from_patch(patch, plan)
+            self.assertIn('\n@@\n', procedures[0]['code'])
+            self.assertFalse((store.procedural_dir / 'finding.py').exists())
+            store.commit_knowledge_updates(object_updates=objects, procedural_updates=procedures)
+            self.assertTrue((store.procedural_dir / 'finding.py').exists())
+
+    def test_add_error_identifies_file_line_and_expected_format(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = KnowledgeStore.create(Path(tmp))
+            plan = {"object_knowledge_updates": [],
+                    "procedural_knowledge_updates": [{"target": "finding", "operation": "create"}]}
+            with self.assertRaises(ValueError) as caught:
+                store.updates_from_patch('*** Begin Patch\n*** Add File: procedural_knowledge/finding.py\nTEXT = 1\n*** End Patch', plan)
+            self.assertIn('procedural_knowledge/finding.py: patch line 3', str(caught.exception))
+            self.assertIn("prefix every content line", str(caught.exception))
+
+    def test_reports_syntax_errors_in_multiple_files_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = KnowledgeStore.create(Path(tmp))
+            plan = {"object_knowledge_updates": [{"target": "Animal", "operation": "create"}],
+                    "procedural_knowledge_updates": [{"target": "finding", "operation": "create"}]}
+            patch = '*** Begin Patch\n*** Update File: object_knowledge.py\n@@\n+class Animal(\n*** Add File: procedural_knowledge/finding.py\n+def finding(\n*** End Patch'
+            with self.assertRaises(ValueError) as caught:
+                store.updates_from_patch(patch, plan)
+            self.assertIn('object_knowledge.py:1:', str(caught.exception))
+            self.assertIn('procedural_knowledge/finding.py:1:', str(caught.exception))
+            self.assertEqual(store.object_source(), '')
     def test_patch_keeps_helpers_and_applies_helper_only_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = KnowledgeStore.create(Path(tmp))
@@ -91,7 +127,7 @@ class KnowledgeStoreTest(unittest.TestCase):
             self.assertEqual(source, store.patch_source(plan)["object_knowledge.py"])
             patch = ("*** Begin Patch\n*** Update File: object_knowledge.py\n@@\n"
                      "-    locked = True\n+    locked = (\n*** End Patch")
-            with self.assertRaises(SyntaxError):
+            with self.assertRaisesRegex(ValueError, "object_knowledge.py:"):
                 store.updates_from_patch(patch, plan)
             self.assertEqual(store.object_source(), source)
 

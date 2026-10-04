@@ -105,7 +105,6 @@ def _log_wandb_progress(
             "task/foresight_revisions": mechanism["foresight_revisions"],
             "task/foresight_revision_rate": mechanism["foresight_revision_rate"],
             "task/post_revision_invalid_actions": mechanism["post_revision_invalid_actions"],
-            "task/validity_prediction_accuracy": mechanism["validity_prediction_accuracy"],
             "task/planned_knowledge_updates": mechanism["planned_knowledge_updates"],
             "task/written_knowledge_updates": mechanism["written_knowledge_updates"],
             "progress/completed_tasks": completed,
@@ -129,6 +128,8 @@ def run(args) -> dict[str, Any]:
     env_class = benchmark["env_class"]
     env_config = build_environment_config(args.benchmark, args)
     reward_mode = benchmark.get("reward_mode", "latest")
+    if args.benchmark == "sciworld" and args.split == "agentboard_native":
+        reward_mode = "latest"
     all_tasks, total_tasks = task_class.load_tasks(args.split)
     task_pool = list(all_tasks)[max(0, int(args.task_offset)) :]
     base_tasks = apply_task_limit(task_pool, args.task_limit)

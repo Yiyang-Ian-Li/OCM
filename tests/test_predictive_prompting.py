@@ -17,7 +17,7 @@ class PredictivePromptingTest(unittest.TestCase):
             {"role": "user", "content": "a rabbit and a crocodile"},
         ]
 
-    def test_policy_uses_memory_and_prediction_residuals(self) -> None:
+    def test_policy_uses_memory_and_observed_history(self) -> None:
         messages = policy_messages(
             benchmark_instruction="Use primitive actions.",
             benchmark_examples="Thought: x\nAction: y",
@@ -26,7 +26,7 @@ class PredictivePromptingTest(unittest.TestCase):
             trajectory=self.trajectory,
         )
         self.assertIn("fallible prior", messages[0]["content"])
-        self.assertIn("following environment observation as ground truth", messages[0]["content"])
+        self.assertIn("environment observations in the trajectory as ground truth", messages[0]["content"])
         self.assertIn("('crocodile', 'rabbit')", messages[0]["content"])
         self.assertEqual(messages[-1], self.trajectory[-1])
 
@@ -57,7 +57,7 @@ class PredictivePromptingTest(unittest.TestCase):
                 {
                     "step": 3,
                     "observation": "a rabbit and a crocodile",
-                    "prediction": {"action": "focus rabbit", "outcome": "task completes"},
+                    "prediction": {"action": "focus rabbit", "transition": {"prediction": "rabbit focused", "knowledge": []}, "progress": {"prediction": "task completes", "knowledge": []}},
                     "action": "focus rabbit",
                     "next_observation": "not complete",
                     "actual": {"success": False, "reward_delta": 0.0, "invalid_action": False},
@@ -65,7 +65,7 @@ class PredictivePromptingTest(unittest.TestCase):
                 {
                     "step": 4,
                     "observation": "not complete",
-                    "prediction": {"action": "focus crocodile", "outcome": "task completes"},
+                    "prediction": {"action": "focus crocodile", "transition": {"prediction": "crocodile focused", "knowledge": []}, "progress": {"prediction": "task completes", "knowledge": []}},
                     "action": "focus crocodile",
                     "next_observation": "task complete",
                     "actual": {"success": True, "reward_delta": 0.5, "invalid_action": False},
@@ -74,9 +74,11 @@ class PredictivePromptingTest(unittest.TestCase):
             result_meta={"success": True},
         )
         self.assertIn("prediction is a hypothesis", messages[0]["content"])
+        self.assertIn("lesson states only what to add, retract, or change", messages[0]["content"])
+        self.assertIn("not a restatement of unchanged facts or workflows", messages[0]["content"])
         payload = json.loads(messages[1]["content"])
         trace = payload["executed_prediction_traces"][0]
-        self.assertEqual(trace["prediction"]["outcome"], "task completes")
+        self.assertEqual(trace["prediction"]["progress"]["prediction"], "task completes")
         self.assertEqual(trace["action"], "focus rabbit")
         self.assertNotIn("executed_outcome_contrasts", payload)
         traces = payload["executed_prediction_traces"]

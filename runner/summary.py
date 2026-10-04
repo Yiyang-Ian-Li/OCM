@@ -75,9 +75,6 @@ def summarize_agent_mechanism(records: list[dict[str, Any]]) -> dict[str, Any]:
     memory_referenced = [
         decision for decision in memory_available if decision.get("knowledge_references")
     ]
-    validity_checked = [
-        decision for decision in predicted if decision.get("validity_correct") is not None
-    ]
     revised = [
         decision for decision in predicted
         if decision.get("action_changed_by_foresight")
@@ -94,11 +91,6 @@ def summarize_agent_mechanism(records: list[dict[str, Any]]) -> dict[str, Any]:
         "post_revision_invalid_actions": sum(
             bool((decision.get("actual") or {}).get("invalid_action"))
             for decision in revised
-        ),
-        "validity_predictions_checked": len(validity_checked),
-        "validity_prediction_accuracy": (
-            sum(bool(decision.get("validity_correct")) for decision in validity_checked)
-            / max(1, len(validity_checked))
         ),
         "planned_knowledge_updates": sum(
             int(update.get("planned_updates", 0)) for update in updates
