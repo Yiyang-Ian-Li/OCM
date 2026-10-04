@@ -75,16 +75,14 @@ class TrialProtocolTest(unittest.TestCase):
         record["result"]["agent_artifact"] = {
             "decision_log": [
                 {
-                    "prediction": {"action": "open container", "outcome": "opens"},
+                    "prediction": {"action": "open container", "transition": {"prediction": "opens", "knowledge": ["object.Container"]}, "progress": {"prediction": "contents accessible", "knowledge": []}},
                     "knowledge_available": True,
                     "knowledge_references": ["object.Container"],
-                    "validity_correct": True,
                 },
                 {
-                    "prediction": {"action": "open door", "outcome": "opens"},
+                    "prediction": {"action": "open door", "transition": {"prediction": "opens", "knowledge": []}, "progress": {"prediction": "route accessible", "knowledge": []}},
                     "knowledge_available": True,
                     "knowledge_references": [],
-                    "validity_correct": False,
                 },
             ],
             "online_update": {
@@ -98,7 +96,7 @@ class TrialProtocolTest(unittest.TestCase):
         self.assertEqual(metrics["predictions"], 2)
         self.assertEqual(metrics["prediction_coverage"], 1.0)
         self.assertEqual(metrics["memory_referenced_decisions"], 1)
-        self.assertEqual(metrics["validity_prediction_accuracy"], 0.5)
+        self.assertNotIn("validity_prediction_accuracy", metrics)
         self.assertEqual(metrics["planned_knowledge_updates"], 1)
         self.assertEqual(metrics["written_knowledge_updates"], 1)
 

@@ -30,6 +30,9 @@ def build_agent(args: argparse.Namespace) -> agents.Agent:
     if args.agent != "react":
         raise ValueError(f"Unsupported agent: {args.agent}")
     _require_model(args, "react")
+    if getattr(args, "react_implementation", "local") == "worldevolver":
+        from agents.reference_react_agent import ReferenceReactAgent
+        return ReferenceReactAgent(_base_config(args))
     return agents.ReactAgent(_base_config(args))
 
 

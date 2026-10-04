@@ -9,16 +9,15 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 BATCH = ROOT / "outputs/runtime/batches/scienceworld-corrected-3trials-20261004"
 SOURCE = BATCH / "source"
-WORKTREE = ROOT / "outputs/code-grounded-revision-v6"
 
 
 def main():
     BATCH.mkdir(parents=True, exist_ok=False)
     SOURCE.mkdir()
     for name in ("agents", "benchmarks", "runner"):
-        shutil.copytree(WORKTREE / name, SOURCE / name, ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copytree(ROOT / name, SOURCE / name, ignore=shutil.ignore_patterns("__pycache__"))
     for name in ("main.py", "config.py", "requirements.txt", "README.md"):
-        shutil.copy2(WORKTREE / name, SOURCE / name)
+        shutil.copy2(ROOT / name, SOURCE / name)
     vendor = SOURCE / "baselines/WorldEvolver"
     shutil.copytree(ROOT / "baselines/WorldEvolver/src", vendor / "src", ignore=shutil.ignore_patterns("__pycache__"))
     (vendor / "data/scienceworld").mkdir(parents=True)

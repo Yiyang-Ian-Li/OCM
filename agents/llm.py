@@ -95,6 +95,7 @@ class OpenAIChatClient:
         tools: Sequence[dict[str, Any]] | None = None,
         tool_choice: Any = None,
         max_tokens: int | None = None,
+        response_format: Mapping[str, Any] | None = None,
         call_type: str = "chat",
     ) -> ChatResult:
         kwargs = {
@@ -107,6 +108,8 @@ class OpenAIChatClient:
         }
         if max_tokens is not None:
             kwargs["max_tokens"] = int(max_tokens)
+        if response_format is not None:
+            kwargs["response_format"] = dict(response_format)
         if top_p is not None:
             kwargs["top_p"] = float(top_p)
         if seed is not None:

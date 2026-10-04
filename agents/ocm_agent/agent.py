@@ -20,6 +20,7 @@ from .knowledge import (
     validate_reflection_plan,
 )
 from .prediction import (
+    PREDICTION_RESPONSE_FORMAT,
     evaluate_observed_transition,
     parse_action_prediction,
 )
@@ -83,6 +84,7 @@ class OCMAgent(Agent):
             seed=self.seed,
             stop=self.stop_sequences or None,
             max_tokens=MAX_COMPLETION_TOKENS.get(call_type),
+            response_format=PREDICTION_RESPONSE_FORMAT if call_type == "ocm_predict" else None,
             call_type=call_type,
         )
         return response.content or ""
@@ -154,7 +156,6 @@ class OCMAgent(Agent):
 
         def decide(
             foresight: Mapping[str, Any] | None = None,
-            draft_policy: Mapping[str, Any] | None = None,
         ) -> dict[str, Any]:
             policy_prompt = policy_messages(
                 benchmark_instruction=instruction,
@@ -163,7 +164,6 @@ class OCMAgent(Agent):
                 observation=observation,
                 trajectory=trajectory,
                 foresight=foresight,
-                draft=draft_policy,
             )
             policy_raw, policy, policy_attempts = self._call_with_format_retry(
                 policy_prompt,
@@ -213,7 +213,7 @@ class OCMAgent(Agent):
         draft_action = str(draft["policy"]["action"])
         draft_prediction = predict(draft_action)
         foresight = dict(draft_prediction["prediction"])
-        revised = decide(foresight=foresight, draft_policy=draft["policy"])
+        revised = decide(foresight=foresight)
         policy = revised["policy"]
         policy_raw = revised["policy_raw_output"]
         action = str(policy["action"])
@@ -226,8 +226,6 @@ class OCMAgent(Agent):
         self.last_raw_output = (
             "Thought: "
             + str(policy["thought"]).strip()
-            + "\nPrediction: "
-            + str(prediction["outcome"]).strip()
             + "\nAction: "
             + action
         )
@@ -253,7 +251,10 @@ class OCMAgent(Agent):
                 "parsed_action": action,
                 "action_changed_by_foresight": not _same_action(action, draft_action),
                 "knowledge_available": bool(available_knowledge),
-                "knowledge_references": list(prediction.get("knowledge") or []),
+                "knowledge_references": list(dict.fromkeys(
+                    reference for component in ("transition", "progress")
+                    for reference in prediction[component]["knowledge"]
+                )),
                 "knowledge_context_chars": len(model_context),
                 "token_usage": step_usage,
             }
@@ -293,6 +294,12 @@ class OCMAgent(Agent):
                         },
                     ]
                 )
+        self._log_prompt(
+            call_type,
+            messages,
+            raw,
+            {"value": None, "attempts": attempts, "error": error},
+        )
         raise RuntimeError(
             f"{call_type} did not return valid output after three attempts: {error}"
         )
@@ -309,10 +316,8 @@ class OCMAgent(Agent):
         if not self._decision_log:
             return
         decision = self._decision_log[-1]
-        prediction = decision["prediction"]
         reward = getattr(outcome, "reward", None)
         evaluation = evaluate_observed_transition(
-            prediction,
             reward=reward,
             previous_reward=self._previous_reward,
             done=bool(getattr(outcome, "done", False)),
@@ -361,16 +366,39 @@ class OCMAgent(Agent):
             "procedural_knowledge_updates": [],
         }
         plan_error: str | None = None
-        reflection_prompt = reflection_messages(
-            benchmark_name=self._benchmark_name,
-            task_context=str(self._task_log.get("initial_observation") or ""),
-            object_signatures=self.knowledge.object_signatures(),
-            procedural_index=self.knowledge.procedural_index(),
-            steps=self._task_log.get("steps", []),
-            result_meta=result_meta,
-            knowledge_context=self.knowledge.model_context(),
-        )
+        reflection_prompt: list[dict[str, str]] = []
+        steps = self._task_log.get("steps", [])
+        knowledge_review = {}
+        for step in steps:
+            for component in ("transition", "progress"):
+                for reference in step["prediction"][component]["knowledge"]:
+                    knowledge_review.setdefault(reference, []).append({
+                        "step": step["step"], "component": component,
+                    })
+        source_plan = {"object_knowledge_updates": [], "procedural_knowledge_updates": []}
+        for reference in knowledge_review:
+            if reference in self.knowledge.knowledge_ids():
+                kind, target = reference.split(".", 1)
+                source_plan[f"{kind}_knowledge_updates"].append(
+                    {"target": target}
+                )
+        referenced_source = self.knowledge.patch_source(source_plan)
+        self._write_json(update_dir / "knowledge_review.json", {
+            "knowledge_prediction_steps": knowledge_review,
+            "referenced_source": referenced_source,
+        })
         for attempt in range(1, max(1, self.max_update_attempts) + 1):
+            reflection_prompt = reflection_messages(
+                benchmark_name=self._benchmark_name,
+                task_context=str(self._task_log.get("initial_observation") or ""),
+                object_signatures=self.knowledge.object_signatures(),
+                procedural_index=self.knowledge.procedural_index(),
+                steps=steps,
+                knowledge_prediction_steps=knowledge_review,
+                referenced_source=referenced_source,
+                result_meta=result_meta,
+                previous_error=plan_error,
+            )
             try:
                 reflection_raw = self._chat(
                     reflection_prompt, call_type="ocm_reflect"
@@ -397,7 +425,6 @@ class OCMAgent(Agent):
                     reflection_raw,
                     {"attempt": attempt, "error": plan_error},
                 )
-                reflection_prompt.extend(_repair_messages(reflection_raw, plan_error))
         self._write_json(update_dir / "reflection_plan.json", plan)
 
         references = [
@@ -455,7 +482,11 @@ class OCMAgent(Agent):
                         raw,
                         {"attempt": attempt, "error": update_error},
                     )
-                    update_prompt.extend(_repair_messages(raw, update_error))
+                    update_prompt.extend([
+                        {"role": "assistant", "content": raw},
+                        {"role": "user", "content": "The preceding patch was rejected: " + update_error
+                         + ". Nothing was applied. Correct that patch using the original source and requested format."},
+                    ])
 
         self._write_json(
             update_dir / "knowledge_updates.json",
@@ -477,14 +508,6 @@ class OCMAgent(Agent):
         }
         self._write_json(update_dir / "meta.json", meta)
         return meta
-
-
-def _repair_messages(raw: str, error: str) -> list[dict[str, str]]:
-    return [
-        {"role": "assistant", "content": raw},
-        {"role": "user", "content": "The preceding output was rejected: " + error
-         + ". Nothing was applied. Correct that output using the original source and requested format."},
-    ]
 
 
 def _max_index(directory: Path, prefix: str, suffix: str) -> int:

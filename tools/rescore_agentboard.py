@@ -10,8 +10,7 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-CODE = ROOT / "outputs/code-grounded-revision-v6"
-sys.path.insert(0, str(CODE))
+sys.path.insert(0, str(ROOT))
 
 from benchmarks.sciworld.agentboard import CorrectedAgentBoard, read_event
 from benchmarks.sciworld.env import SciWorldEnv

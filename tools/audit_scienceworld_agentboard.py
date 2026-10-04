@@ -12,7 +12,7 @@ import time
 from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "outputs/code-grounded-revision-v6"))
+sys.path.insert(0, str(ROOT))
 
 from benchmarks.sciworld.process import close_scienceworld_env, make_scienceworld_env
 from scienceworld.constants import JAR_PATH

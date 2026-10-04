@@ -5,6 +5,32 @@ from typing import Any, Mapping, Sequence
 from .json_utils import load_jsonish
 
 
+PREDICTION_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "action_prediction",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                component: {
+                    "type": "object",
+                    "properties": {
+                        "prediction": {"type": "string", "minLength": 1},
+                        "knowledge": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["prediction", "knowledge"],
+                    "additionalProperties": False,
+                }
+                for component in ("transition", "progress")
+            },
+            "required": ["transition", "progress"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
 def parse_action_prediction(
     raw: str,
     action: str,
@@ -14,35 +40,24 @@ def parse_action_prediction(
     payload = load_jsonish(raw)
     if not isinstance(payload, Mapping):
         raise ValueError("world-model prediction must be a JSON object")
-    outcome = str(payload.get("outcome") or "").strip()
-    valid = payload.get("valid")
-    effect = str(payload.get("effect") or "").strip().lower()
-    if not outcome:
-        raise ValueError("prediction needs a concise outcome")
-    if valid not in {True, False, None}:
-        raise ValueError("prediction valid must be true, false, or null")
-    if effect not in {"advance", "neutral", "harm", "complete", "unknown"}:
-        raise ValueError(
-            "prediction effect must be advance, neutral, harm, complete, or unknown"
-        )
     known = set(available_knowledge)
-    references = []
-    values = payload.get("knowledge")
-    for value in values if isinstance(values, list) else []:
-        reference = str(value).strip().strip("`")
-        if reference and reference in known and reference not in references:
-            references.append(reference)
-    return {
-        "action": action,
-        "outcome": outcome,
-        "valid": valid,
-        "effect": effect,
-        "knowledge": references,
-    }
+    result = {"action": action}
+    for component in ("transition", "progress"):
+        value = payload.get(component)
+        if not isinstance(value, Mapping) or not isinstance(value.get("prediction"), str) or not value["prediction"].strip():
+            raise ValueError(f"{component} needs a nonempty prediction string")
+        values = value.get("knowledge", [])
+        if not isinstance(values, list):
+            raise ValueError(f"{component}.knowledge must be a list")
+        references = list(dict.fromkeys(
+            str(item).strip().strip("`") for item in values
+            if str(item).strip().strip("`") in known
+        ))
+        result[component] = {"prediction": value["prediction"].strip(), "knowledge": references}
+    return result
 
 
 def evaluate_observed_transition(
-    prediction: Mapping[str, Any],
     *,
     reward: float | None,
     previous_reward: float | None,
@@ -50,12 +65,6 @@ def evaluate_observed_transition(
     success: bool | None,
     invalid_action: bool,
 ) -> dict[str, Any]:
-    predicted_valid = prediction.get("valid")
-    validity_correct = (
-        None
-        if predicted_valid is None
-        else bool(predicted_valid) is (not bool(invalid_action))
-    )
     reward_delta = None
     if reward is not None and previous_reward is not None:
         reward_delta = float(reward) - float(previous_reward)
@@ -67,5 +76,4 @@ def evaluate_observed_transition(
             "success": success,
             "invalid_action": bool(invalid_action),
         },
-        "validity_correct": validity_correct,
     }
